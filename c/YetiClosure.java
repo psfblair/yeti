@@ -3,7 +3,8 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2007,2008,2009,2010 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
+ * Copyright (c) 2011 Gergő Érdi
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,7 +31,7 @@
  */
 package yeti.lang.compiler;
 
-import yeti.renamed.asm3.Label;
+import yeti.renamed.asmx.Label;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
@@ -91,8 +92,7 @@ class Apply extends Code {
             }
             sig.append(")Ljava/lang/Object;");
             ctx.visitLine(line);
-            ctx.methodInsn(INVOKESTATIC, f.name,
-                                f.bindName, sig.toString());
+            ctx.methodInsn(INVOKESTATIC, f.name, f.bindName, sig.toString());
             return;
         }
 
@@ -185,8 +185,7 @@ final class TryCatch extends CapturingClosure {
         }
         sigb.append(")Ljava/lang/Object;");
         String sig = sigb.toString();
-        String name = "_" + ctx.usedMethodNames.size();
-        ctx.usedMethodNames.put(name, null);
+        String name = ctx.methodName(null);
         ctx.methodInsn(INVOKESTATIC, ctx.className, name, sig);
         Ctx mc = ctx.newMethod(ACC_PRIVATE | ACC_STATIC, name, sig);
         mc.localVarCount = argc;
@@ -254,20 +253,29 @@ final class TryCatch extends CapturingClosure {
 abstract class CaptureRef extends BindRef {
     Function capturer;
     BindRef ref;
-    Binder[] args;
-    Capture[] argCaptures;
+    private Binder[] args;
+    private Capture[] argCaptures;
+    private boolean hasArgCaptures;
 
     final class SelfApply extends Apply {
         boolean tail;
         int depth;
 
-        SelfApply(YType type, Code f, Code arg,
-                  int line, int depth) {
+        SelfApply(YType type, Code f, Code arg, int line, int depth) {
             super(type, f, arg, line);
             this.depth = depth;
             if (origin != null) {
                 this.arity = origin.arity = args.length - depth + 1;
                 this.ref = origin;
+            }
+            if (depth == 0 && capturer.argCaptures == null) {
+                if (hasArgCaptures)
+                    throw new CompileException(line, 0,
+                        "Internal error - already has argCaptures");
+                hasArgCaptures = true;
+                // we have to resolve the captures lazily later,
+                // as here all might not yet be referenced
+                capturer.argCaptures = CaptureRef.this;
             }
         }
 
@@ -279,24 +287,33 @@ abstract class CaptureRef extends BindRef {
         }
 
         void gen(Ctx ctx) {
-            if (!tail || depth != 0 ||
-                capturer.argCaptures != argCaptures ||
-                capturer.restart == null) {
+            if (!tail || depth != 0 || capturer.argCaptures != CaptureRef.this
+                      || capturer.restart == null) {
                 // regular apply, if tail call optimisation can't be done
                 super.gen(ctx);
                 return;
             }
             // push all argument values into stack - they must be evaluated
             // BEFORE modifying any of the arguments for tail-"call"-jump.
-            genArg(ctx, argCaptures == null ? 0 : argCaptures.length);
+            genArg(ctx, argCaptures() == null ? 0 : argCaptures.length);
             ctx.varInsn(ASTORE, capturer.argVar);
             // Now assign the call argument values into argument registers.
-            if (argCaptures != null)
-                for (int i = argCaptures.length; --i >= 0;)
+            if (argCaptures != null) {
+                int i = argCaptures.length;
+                // XXX: The merged-argument fix is needed only when
+                //      argCaptures[i - 1] == null - the argument is
+                //      wrongly considered unused by the tailcall optimizer.
+                if (capturer.outer != null && capturer.outer.merged &&
+                        i > 0 && argCaptures[i - 1] == null) {
+                    --i;
+                    ctx.varInsn(ASTORE, 1); // HACK - fixes merged argument
+                }
+                while (--i >= 0)
                     if (argCaptures[i] != null)
                         ctx.varInsn(ASTORE, argCaptures[i].localVar);
                     else
                         ctx.insn(POP);
+            }
             // And just jump into the start of the function...
             ctx.jumpInsn(GOTO, capturer.restart);
         }
@@ -308,29 +325,32 @@ abstract class CaptureRef extends BindRef {
         Code apply(Code arg, YType res, int line) {
             if (depth < 0)
                 return super.apply(arg, res, line);
-            if (depth == 1 && capturer.argCaptures == null) {
-                /*
-                 * All arguments have been applied, now we have to search
-                 * their captures in the inner function (by looking for
-                 * captures matching the function arguments).
-                 * Resulting list will be also given to the inner function,
-                 * so it could copy those captures into local registers
-                 * to allow tail call.
-                 *
-                 * NB. To understand this, remember that this is self-apply,
-                 * so current scope is also the scope of applied function.
-                 */
-                argCaptures = new Capture[args.length];
-                for (Capture c = capturer.captures; c != null; c = c.next)
-                    for (int i = args.length; --i >= 0;)
-                        if (c.binder == args[i]) {
-                            argCaptures[i] = c;
-                            break;
-                        }
-                capturer.argCaptures = argCaptures;
-            }
             return new SelfApply(res, this, arg, line, depth - 1);
         }
+    }
+
+    Capture[] argCaptures() {
+        if (hasArgCaptures && argCaptures == null) {
+            /*
+             * All arguments have been applied, now we have to search
+             * their captures in the inner function (by looking for
+             * captures matching the function arguments).
+             * Resulting list will be also given to the inner function,
+             * so it could copy those captures into local registers
+             * to allow tail call.
+             *
+             * NB. To understand this, remember that this is self-apply,
+             * so current scope is also the scope of applied function.
+             */
+            argCaptures = new Capture[args.length];
+            for (Capture c = capturer.captures; c != null; c = c.next)
+                for (int i = args.length; --i >= 0;)
+                    if (c.binder == args[i]) {
+                        argCaptures[i] = c;
+                        break;
+                    }
+        }
+        return argCaptures;
     }
 
     Code apply(Code arg, YType res, int line) {
@@ -355,6 +375,8 @@ abstract class CaptureRef extends BindRef {
         int n = 0;
         for (Function f = capturer; f != null; ++n, f = f.outer)
             if (f.selfBind == ref.binder) {
+                if (ref.flagop(ASSIGN))
+                    break; // no tail recursion for vars
                 args = new Binder[n];
                 f = capturer.outer;
                 for (int i = n; --i >= 0; f = f.outer)
@@ -385,9 +407,8 @@ final class Capture extends CaptureRef implements CaptureWrapper, CodeGen {
     }
 
     String getId(Ctx ctx) {
-        if (id == null) {
+        if (id == null)
             id = "_".concat(Integer.toString(ctx.fieldCounter++));
-        }
         return id;
     }
 
@@ -400,11 +421,17 @@ final class Capture extends CaptureRef implements CaptureWrapper, CodeGen {
          * (the variable doesn't (always) know that it will be
          * a direct binding when it's captured, as this determined
          * later using prepareConst())
+         * XXX An automatic uncapture is done on DIRECT_BIND, as it allows
+         * cascading uncaptures done by mergeCaptures into parent captures,
+         * avoiding attempts to generate parent capture wrappings in that case.
+         * This fixes 'try-catch class closure' test.
          */
+        if (fl == DIRECT_BIND && !uncaptured)
+            return uncaptured = ref.flagop(fl);
         return (fl & (PURE | ASSIGN | DIRECT_BIND)) != 0 && ref.flagop(fl);
     }
 
-    public void gen2(Ctx ctx, Code value, int _) {
+    public void gen2(Ctx ctx, Code value, int __) {
         if (uncaptured) {
             ref.assign(value).gen(ctx);
         } else {
@@ -428,6 +455,11 @@ final class Capture extends CaptureRef implements CaptureWrapper, CodeGen {
             if (localVar < -1) {
                 ctx.intConst(-2 - localVar);
                 ctx.insn(AALOAD);
+                if (wrapper != null) {
+                    String cty = wrapper.captureType();
+                    if (cty != null)
+                        ctx.captureCast(cty);
+                }
             } else {
                 ctx.fieldInsn(GETFIELD, ctx.className, id, captureType());
             }
@@ -561,16 +593,17 @@ abstract class CapturingClosure extends AClosure {
     // this seems to cause extra check only in Function.finishGen).
     int mergeCaptures(Ctx ctx, boolean cleanup) {
         int counter = 0;
-        Capture prev = null;
+        Capture prev = null, next;
     next_capture:
-        for (Capture c = captures; c != null; c = c.next) {
+        for (Capture c = captures; c != null; c = next) {
+            next = c.next;
             Object identity = c.identity = c.captureIdentity();
             if (cleanup && (c.uncaptured || c.ref.flagop(DIRECT_BIND))) {
                 c.uncaptured = true;
                 if (prev == null)
-                    captures = c.next;
+                    captures = next;
                 else
-                    prev.next = c.next;
+                    prev.next = next;
             }
             if (c.uncaptured)
                 continue;
@@ -579,7 +612,8 @@ abstract class CapturingClosure extends AClosure {
                 if (i.identity == identity) {
                     c.id = i.id; // copy old one's id
                     c.localVar = i.localVar;
-                    prev.next = c.next;
+                    prev.next = next;
+                    onMerge(c);
                     continue next_capture;
                 }
             }
@@ -587,6 +621,9 @@ abstract class CapturingClosure extends AClosure {
             prev = c;
         }
         return counter;
+    }
+
+    void onMerge(Capture removed) {
     }
 }
 
@@ -607,7 +644,7 @@ final class Function extends CapturingClosure implements Binder {
     Label restart; // used by tail-call optimizer
     Function outer; // outer function of directly-nested function
     // outer arguments to be saved in local registers (used for tail-call)
-    Capture[] argCaptures;
+    CaptureRef argCaptures;
     // argument value for inlined function
     private Code uncaptureArg;
     // register used by argument (2 for merged inner function)
@@ -615,7 +652,7 @@ final class Function extends CapturingClosure implements Binder {
     // Marks function optimised as method and points to it's inner-most lambda
     Function methodImpl;
     // Function has been merged with its inner function.
-    private boolean merged; 
+    boolean merged;
     // How many times the argument has been used.
     // This counter is also used by argument nulling to determine
     // when it safe to assume that argument value is no more needed.
@@ -632,15 +669,20 @@ final class Function extends CapturingClosure implements Binder {
     private boolean moduleInit;
     // methodImpl and only one live capture - carry it directly.
     boolean capture1;
+    // not in struct - capture final fields
+    private boolean notInStruct;
 
     final BindRef arg = new BindRef() {
         void gen(Ctx ctx) {
             if (uncaptureArg != null) {
                 uncaptureArg.gen(ctx);
             } else {
+                int t;
                 ctx.load(argVar);
                 // inexact nulling...
-                if (--argUsed == 0 && ctx.tainted == 0) {
+                if (--argUsed == 0 && ctx.tainted == 0 &&
+                        (t = type.deref().type) != YetiType.NUM &&
+                        t != YetiType.BOOL) {
                     ctx.insn(ACONST_NULL);
                     ctx.varInsn(ASTORE, argVar);
                 }
@@ -678,7 +720,8 @@ final class Function extends CapturingClosure implements Binder {
         if (body instanceof Function) {
             Function bodyFun = (Function) body;
             bodyFun.outer = this;
-            if (argVar == 1 && !bodyFun.merged && bodyFun.selfRef == null) {
+            if (argVar == 1 && !bodyFun.merged &&
+                bodyFun.selfRef == null && captures == null) {
                 merged = true;
                 ++bodyFun.argVar;
             }
@@ -702,7 +745,16 @@ final class Function extends CapturingClosure implements Binder {
             if (selfRef == null) {
                 selfRef = new CaptureRef() {
                     void gen(Ctx ctx) {
-                        ctx.load(0);
+                        if (shared) {
+                            Function.this.gen(ctx);
+                        } else {
+                            ctx.load(0).forceType("yeti/lang/Fun");
+                        }
+                    }
+
+                    boolean flagop(int fl) {
+                        // Don't be a capture when FunClass._ can be used
+                        return (fl & DIRECT_BIND) != 0 && shared;
                     }
                 };
                 selfRef.binder = selfBind;
@@ -758,7 +810,8 @@ final class Function extends CapturingClosure implements Binder {
     void captureInit(Ctx fun, Capture c, int n) {
         if (methodImpl == null) {
             // c.getId() initialises the captures id as a side effect
-            fun.cw.visitField(0, c.getId(fun), c.captureType(),
+            fun.cw.visitField(notInStruct ? ACC_PRIVATE | ACC_FINAL : 0,
+                              c.getId(fun), c.captureType(),
                               null, null).visitEnd();
         } else if (capture1) {
             assert (n == 0);
@@ -785,9 +838,13 @@ final class Function extends CapturingClosure implements Binder {
         /*
          * This has to be done before mergeCaptures to have all binders.
          * NOP for 1/2-arg functions - they don't have argument captures and
-         * the outer captures localVar's will be set by mergeCaptures.
+         * the outer captures localVar's will be set by mergeCaptures
+         * (unless the 2 argument function _has_ argument captures,
+         *  which can happen when the inner function is constructed by
+         *  some weird kind of lambda!).
          */
-        if (methodImpl != this && methodImpl != body) {
+        if (methodImpl != this &&
+            (methodImpl != body || methodImpl.captures != null)) {
             captureMapping = new IdentityHashMap();
 
             // Function is binder for it's argument
@@ -809,11 +866,9 @@ final class Function extends CapturingClosure implements Binder {
         }
 
         // Create method
-        Map usedNames = ctx.usedMethodNames;
-        bindName = bindName != null ? mangle(bindName) : "_";
-        if (usedNames.containsKey(bindName) || bindName.startsWith("_"))
-            bindName += usedNames.size();
-        usedNames.put(bindName, null);
+        if (bindName != null)
+            bindName = mangle(bindName);
+        bindName = ctx.methodName(bindName);
         StringBuffer sig = new StringBuffer(capture1 ? "(" : "([");
         for (int i = methodImpl.argVar + 2; --i >= 0;) {
             if (i == 0)
@@ -865,20 +920,21 @@ final class Function extends CapturingClosure implements Binder {
      * An instance is also given, but capture fields are not initialised
      * (the captures are set later in the finishGen).
      */
-    void prepareGen(Ctx ctx) {
+    boolean prepareGen(Ctx ctx, boolean notStruct) {
         if (methodImpl != null) {
             prepareMethod(ctx);
-            return;
+            return false;
         }
 
         if (merged) { // 2 nested lambdas have been optimised into 1
             Function inner = (Function) body;
             inner.bindName = bindName;
-            inner.prepareGen(ctx);
+            boolean res = inner.prepareGen(ctx, notStruct);
             name = inner.name;
-            return;
+            return res;
         }
 
+        notInStruct = notStruct;
         if (bindName == null)
             bindName = "";
         name = ctx.compilation.createClassName(ctx,
@@ -887,14 +943,13 @@ final class Function extends CapturingClosure implements Binder {
         publish &= shared;
         String funClass =
             argVar == 2 ? "yeti/lang/Fun2" : "yeti/lang/Fun";
-        Ctx fun = ctx.newClass(publish ? ACC_PUBLIC | ACC_SUPER | ACC_FINAL
-                                       : ACC_SUPER | ACC_FINAL,
-                               name, funClass, null);
+        Ctx fun = ctx.newClass(ACC_SUPER | ACC_FINAL, name, funClass, null, 0);
 
         if (publish)
-            fun.markInnerClass(ctx, ACC_PUBLIC | ACC_STATIC | ACC_FINAL);
+            fun.markInnerClass(ctx, ACC_STATIC | ACC_FINAL);
         mergeCaptures(fun, false);
-        fun.createInit(shared ? ACC_PRIVATE : 0, funClass);
+        if (!notStruct)
+            fun.createInit(shared ? ACC_PRIVATE : 0, funClass);
 
         Ctx apply = argVar == 2
             ? fun.newMethod(ACC_PUBLIC + ACC_FINAL, "apply",
@@ -906,8 +961,9 @@ final class Function extends CapturingClosure implements Binder {
         if (argCaptures != null) {
             // Tail recursion needs all args to be in local registers
             // - otherwise it couldn't modify them safely before restarting
-            for (int i = 0; i < argCaptures.length; ++i) {
-                Capture c = argCaptures[i];
+            Capture[] args = argCaptures.argCaptures();
+            for (int i = 0; i < args.length; ++i) {
+                Capture c = args[i];
                 if (c != null && !c.uncaptured) {
                     c.gen(apply);
                     c.localVar = apply.localVarCount;
@@ -916,11 +972,8 @@ final class Function extends CapturingClosure implements Binder {
                 }
             }
         }
-        if (moduleInit && publish) {
-            apply.methodInsn(INVOKESTATIC, ctx.className,
-                             "eval", "()Ljava/lang/Object;");
-            apply.insn(POP);
-        }
+        if (moduleInit && publish)
+            apply.methodInsn(INVOKESTATIC, ctx.className, "init", "()V");
         genClosureInit(apply);
         apply.visitLabel(restart = new Label());
         body.gen(apply);
@@ -932,14 +985,36 @@ final class Function extends CapturingClosure implements Binder {
             shared ? fun.newMethod(ACC_STATIC, "<clinit>", "()V") : ctx;
         valueCtx.typeInsn(NEW, name);
         valueCtx.insn(DUP);
-        valueCtx.visitInit(name, "()V");
+        if (notStruct) { // final fields must be initialized in constructor
+            StringBuffer sigb = new StringBuffer("(");
+            for (Capture c = captures; c != null; c = c.next)
+                if (!c.uncaptured)
+                    sigb.append(c.captureType());
+            String sig = sigb.append(")V").toString();
+            Ctx init = fun.newMethod(shared ? ACC_PRIVATE : 0, "<init>", sig);
+            init.load(0).methodInsn(INVOKESPECIAL, funClass, "<init>", "()V");
+            int counter = 0;
+            for (Capture c = captures; c != null; c = c.next)
+                if (!c.uncaptured) {
+                    c.captureGen(valueCtx);
+                    init.load(0).load(++counter)
+                        .fieldInsn(PUTFIELD, name, c.id, c.captureType());
+                }
+            init.insn(RETURN);
+            init.closeMethod();
+            valueCtx.visitInit(name, sig);
+            valueCtx.forceType("yeti/lang/Fun");
+        } else {
+            valueCtx.visitInit(name, "()V");
+        }
         if (shared) {
-            fun.cw.visitField(ACC_PUBLIC | ACC_STATIC | ACC_FINAL,
+            fun.cw.visitField(ACC_STATIC | ACC_FINAL,
                               "_", "Lyeti/lang/Fun;", null, null).visitEnd();
             valueCtx.fieldInsn(PUTSTATIC, name, "_", "Lyeti/lang/Fun;");
             valueCtx.insn(RETURN);
             valueCtx.closeMethod();
         }
+        return notStruct;
     }
 
     void finishGen(Ctx ctx) {
@@ -1057,7 +1132,7 @@ final class Function extends CapturingClosure implements Binder {
         // (and will) be optimised into shared static constant.
         if (liveCaptures == 0) {
             shared = true;
-            prepareGen(ctx);
+            prepareGen(ctx, false);
         }
         return liveCaptures == 0;
     }
@@ -1078,11 +1153,12 @@ final class Function extends CapturingClosure implements Binder {
             ctx.visitInit("yeti/lang/Const", "(Ljava/lang/Object;)V");
             ctx.forceType("yeti/lang/Fun");
         } else if (prepareConst(ctx)) {
-            ctx.fieldInsn(GETSTATIC, name, "_", "Lyeti/lang/Fun;");
-        } else {
-            prepareGen(ctx);
+            if (methodImpl == null)
+                ctx.fieldInsn(GETSTATIC, name, "_", "Lyeti/lang/Fun;");
+            else
+                ctx.insn(ACONST_NULL);
+        } else if (!prepareGen(ctx, true))
             finishGen(ctx);
-        }
     }
 }
 
@@ -1117,6 +1193,7 @@ final class RootClosure extends LoopExpr {
     LoadModule[] preload;
     boolean isModule;
     ModuleType moduleType;
+    int line;
 
     void gen(Ctx ctx) {
         genClosureInit(ctx);

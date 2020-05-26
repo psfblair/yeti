@@ -1,6 +1,6 @@
 /**
  * Yeti compiler main program.
- * Copyright (c) 2008.2009 Madis Janson
+ * Copyright (c) 2008-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,12 +34,13 @@ load yeti.lang.compiler.showtype;
 var eval = undef_str;
 var exec = true;
 var compileErrorTrace = false;
-var types = array [];
+var modules = array [];
 var printType = false;
 var sandbox = false;
 var out = System#err;
 var doc_dir = undef_str;
 var doc_script = '';
+var nojava = false;
 
 srcs = array [];
 argv = array _argv;
@@ -62,16 +63,18 @@ repl eval =
     fi);
 
 help =
-    "yeti -flags... files\n\n\
+    "yeti -flags... files/directories\n\n\
     "  -h               Print this help\n\
     "  -e expr          Evaluate expr and print result\n\
     "  -d directory     Compile and store the generated class files\n\
     "                   in the given directory\n\
     "  -cp path         Give classpath\n\
+    "  -nojava          Don't search java files from source directories\n\
     "  -preload modules Preload modules (: separated list)\n\
     "  -icast           Generate superfluous casts for broken JVMs\n\
     "  -javaver version Forces specified Java version when compiling Java\n\
     "  -j option        Option for Javac (used when compiling Java sources)\n\
+    "  -doc directory   Generate module documentation into given directory\n\
     "  -type            Print type signature of given expression or module\n";
 
 splitPath = strSplit File#pathSeparator;
@@ -85,24 +88,26 @@ not (defined? eval or empty? argv) and (not exec or empty? srcs) loop
             exec := false;
         "-d":
             target = shift argv;
-            push options (To if target != '' then "\(target)/" else '' fi);
+            push options (To target);
             exec := false;
         "-e":
             eval := shift argv;
         "-cp":
-            push options (ClassPath (splitPath (shift argv)));
+            shift argv |> splitPath |> ClassPath |> push options;
         "-preload":
-            push options (Preload (splitPath (shift argv)));
+            shift argv |> splitPath |> Preload |> push options;
         "-type":
             printType := true;
             exec := false;
-            push compileOptions (Type (push types));
+            push compileOptions (Type (push modules));
         "-doc":
             doc_dir := shift argv;
             exec := false;
-            push compileOptions (Type (push types));
+            push compileOptions (Type (push modules));
         "-doc-format":
             doc_script := shift argv;
+        "-nojava":
+            nojava := true;
         "-javaver":
             ver = shift argv;
             for ['-source', ver, '-target', ver]
@@ -133,7 +138,7 @@ not (defined? eval or empty? argv) and (not exec or empty? srcs) loop
             push options (NoFrames ());
         "-v":
             println "Yeti \(yetiRuntimeVersion)";
-            sysExit 0;
+            threadExit 0;
         _:
             case arg of
             "-h": ();
@@ -141,10 +146,10 @@ not (defined? eval or empty? argv) and (not exec or empty? srcs) loop
             "--help": ();
             _:
                 println "Unexpected option: \(arg)";
-                sysExit 1;
+                threadExit 1;
             esac;
             println help;
-            sysExit 0
+            threadExit 0
         esac
     else
         push srcs arg
@@ -153,18 +158,19 @@ not (defined? eval or empty? argv) and (not exec or empty? srcs) loop
 scan src local dirs to =
    (var ok = true;
     if src `strEnds?` '.yeti' then
-        name = if local == '' then src else local fi;
-        // avoid duplicates, prefer shortest name
-        if not src in to or strLength to.[src] > strLength name then
-            to.[src] := name
-        fi
+        to[src] := src
     elif src `strEnds?` '.java' then
-        to.[src] := src // javac prefers full path
+        if nojava then
+            ok := false
+        else
+            to[src] := src
+        fi
     else
         dirList = listDirectory false src;
-        ok := not empty? dirList or new File(src)#isDirectory();
-        if ok then
-            dirs src;
+        if empty? dirList then
+            ok := new File(src)#isDirectory()
+        else
+            dirs (SourceDir src)
         fi;
         for dirList do {name, path}:
             fn = if local == '' then name else "\(local)/\(name)" fi;
@@ -195,7 +201,7 @@ if defined? eval then
         printException ex;
     CompileException ex:
         printMessage ex;
-        sysExit 1;
+        threadExit 1;
     Result val: 
         if printType then
             println (showType [] '' type)
@@ -215,11 +221,10 @@ else
         push compileOptions (Exec argv)
     fi;
     files = [:];
-    sourcePath = array [];
-    for srcs do src:
-        if not scan src '' (push sourcePath) files then
+    for (list srcs) do src:
+        if not scan src '' (push compileOptions) files then
             println "Don't know what to do with `\(src)'";
-            sysExit 1
+            threadExit 1
         fi
     done;
     try
@@ -229,36 +234,27 @@ else
             ex#printStackTrace()
         fi;
         printMessage ex;
-        sysExit 1
+        threadExit 1
     catch java.lang.reflect.InvocationTargetException ex:
         printException ex#getCause()
     catch java.lang.Throwable ex:
         printException ex
     yrt;
-    if not empty? types then
+    if not empty? modules then
         if defined? doc_dir then
-            ctx = evaluateYetiCode [ICast ()];
-            case ctx [Bind (), Source 'doc.yeti', Exec (array [doc_dir])]
-                     ((inputHandle classOf YetiEval#getClassLoader()
-                                    #getResourceAsStream('doc.yeti')
-                                   'UTF-8').contents ()) of
-            {result = Result obj}:
-                for types (obj is ~Object unsafely_as 'a);
-            {str}:
-                println str
-            esac
+            generateYetiDoc {directory = doc_dir, modules, error = println}
         else
-            for types do t:
-                if t.doc != "" then
-                    println "/*\n\(t.doc)\n*/"
+            for (list modules) do m:
+                if m.doc != "" then
+                    println "/*\n\(m.doc)\n*/"
                 fi;
-                println "module \(t.name);\n";
-                for t.typedefs do {name, type, param}:
+                println "module \(m.name);\n";
+                for m.typedefs do {name, type, param}:
                     p = if not empty? param then "<\(strJoin ', ' param)>" fi;
                     println "typedef \(name)\(p) = \
                             "\(showType [CommentDoc ()] '' type)\n"
                 done;
-                println (showType [CommentDoc ()] '' t.type);
+                println (showType [CommentDoc ()] '' m.type);
             done
         fi
     fi

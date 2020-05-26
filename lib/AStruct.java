@@ -49,7 +49,12 @@ public abstract class AStruct implements Struct, Serializable {
         return names[field];
     }
 
+    public String eqName(int field) {
+        return names[field];
+    }
+
     public Object ref(int field, int[] index, int at) {
+        index[at + 1] = 0;
         if (vars != null && vars[field]) {
             index[at] = field;
             return this;
@@ -62,12 +67,24 @@ public abstract class AStruct implements Struct, Serializable {
         Unsafe.unsafeThrow(new NoSuchFieldException(name));
     }
 
+    public int hashCode() {
+        int h = 0;
+        for (int i = 0, cnt = count(); i < cnt; ++i) {
+            String name = eqName(i);
+            if (name != "") {
+                Object v = get(i);
+                h += name.hashCode() ^ (v == null ? 0 : v.hashCode());
+            }
+        }
+        return h;
+    }
+
     public boolean equals(Object o) {
         Struct st = (Struct) o;
         int acnt = count(), bcnt = st.count(), i = 0, j = 0;
         while (i < acnt && j < bcnt) {
             String an, bn;
-            if ((an = name(i)) == (bn = st.name(j))) {
+            if ((an = eqName(i)) == (bn = st.eqName(j)) && an != "") {
                 Object a = get(i);
                 Object b = st.get(j);
                 if (a != b && (a == null || !a.equals(b)))
@@ -86,9 +103,12 @@ public abstract class AStruct implements Struct, Serializable {
     public String toString() {
         StringBuffer sb = new StringBuffer().append('{');
         for (int cnt = count(), i = 0; i < cnt; ++i) {
-            if (i != 0)
-                sb.append(", ");
-            sb.append(name(i)).append('=').append(Core.show(get(i)));
+            String name = eqName(i);
+            if (name != "") {
+                if (i != 0)
+                    sb.append(", ");
+                sb.append(name).append('=').append(Core.show(get(i)));
+            }
         }
         sb.append('}');
         return sb.toString();

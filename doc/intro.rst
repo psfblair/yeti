@@ -7,8 +7,8 @@ Short introduction to Yeti
 :Author: Madis Janson
 
 .. contents:: Contents
-.. _yeti.jar: http://linux.ee/~mzz/yeti/yeti.jar
-.. _home page: http://linux.ee/~mzz/yeti/
+.. _yeti.jar: http://dot.planet.ee/yeti/yeti.jar
+.. _home page: http://mth.github.io/yeti/
 
 What is Yeti?
 ~~~~~~~~~~~~~~~~~~
@@ -34,7 +34,7 @@ by simply running ``java -jar yeti.jar``::
 
     >
 
-At least J2SE 1.4 compatible JVM is required. The `yeti.jar`_ file can be
+At least J2SE 1.6 compatible JVM is required. The `yeti.jar`_ file can be
 downloaded from Yeti `home page`_ or built from sources (the sources can be
 fetched using ``git clone git://github.com/mth/yeti.git``).
 
@@ -42,7 +42,7 @@ REPL means Read-Eval-Print-Loop - a short description of the interactive
 environment, which reads expressions from user, evaluates them and prints
 the resulting values. Yeti REPL can be terminated by sending End-Of-File
 mark (Ctrl-D on Unix systems or Ctrl-Z on Windows systems).
-It is useful to use some readline wrapper for more confortable editing,
+It is useful to use some readline wrapper for more comfortable editing,
 when some is available (rlwrap can be installed on Debian or Ubuntu linux
 systems using ``aptitude install rlwrap`` or ``sudo aptitude install rlwrap``).
 ::
@@ -273,7 +273,7 @@ a function from number to a function from number to number.
 
 This may sound complicated, but you don't have to think how it really works,
 as long as you just need a multiple-argument function - declaring
-multiple arguments and appling them in the same order is enough.
+multiple arguments and applying them in the same order is enough.
 Knowing how curring works allows you to use partial application (like
 subFrom10 and subFrom2 in the above example).
 
@@ -384,7 +384,7 @@ results in a type error.
 Ignoring the argument
 ++++++++++++++++++++++++
 
-There is an another way of definining function that do not want to use it's
+There is an another way of defining function that do not want to use it's
 argument value.
 ::
 
@@ -401,6 +401,8 @@ The ``_`` symbol is a kind of wildcard - it tells to the compiler
 that any value may be given and it will be ignored.
 The ``'a`` in the argument type is a free type variable - meaning any
 argument type is allowed.
+
+.. _shorthand function literal:
 
 There is also a shorthand notation for defining function literals that
 ignore the argument::
@@ -765,7 +767,7 @@ and a jump instruction to the start of the function - resulting in a
 code very similar to that of the first factorial example using explicit
 loop. Yeti does tail-call optimisation only with self-reference from
 single or directly nested function literals (full tail call support is
-somewhat difficult to implement effectivily in the JVM).
+somewhat difficult to implement effectively in the JVM).
 
 The function bindings can be used directly as expressions::
 
@@ -786,7 +788,7 @@ how the partial application works.
 
 Iteration using **loop**\s and optimised tail-recursion are semantically
 equivalent. So it can be said, that iteration is just a special case of
-recursion. It is usually preferrable in Yeti to use recursive functions
+recursion. It is usually preferable in Yeti to use recursive functions
 for iteration - as it is often more declarative and uniform approach.
 Still, the **loop** should be used, when it shows more clearly the intent
 of the code. It should be noted, that direct iteration is needed relatively
@@ -1122,19 +1124,18 @@ An array can be created from list using an ``array`` function::
     a is array<number> = [3,4,5,6,7]
 
 
-Array elements can be referenced by index using *array*\ **.[**\ *index*\ **]**
+Array elements can be referenced by index using *array*\ **[**\ *index*\ **]**
 syntax::
 
-    > a.[0]
+    > a[0]
     3 is number
-    > a.[4]
+    > a[4]
     7 is number
 
-An array index is always zero-based. The dot is necessary, because otherwise
-the brackets would be mistaken for a list literal. Array elements can be
-assigned like variables::
+An array index is always zero-based. Array elements can be assigned
+like variables::
 
-    > a.[2] := 33
+    > a[2] := 33
     > a
     [3,4,33,6,7] is array<number>
 
@@ -1192,20 +1193,20 @@ argument type::
     > head
     <yeti.lang.std$head> is list?<'a> -> 'a
 
-The type ``list?`` is actually parametric about the existance of the
+The type ``list?`` is actually parametric about the existence of the
 numeric index and can unify both with ``array`` and ``list`` type.
 
 The ``tail`` of an array shares the original array - meaning that modification
 of the original array will be visible in the returned tail.
 It is best to avoid modifying an array after it is used as ``list?``
 (unless you don't use the resulting lists after that) - the results may be
-suprising sometimes, although defined for most list functions.
+surprising sometimes, although defined for most list functions.
 
 A simple example of using arrays - an implementation of the selection
 sort algorithm::
 
     selectionSort a =
-       (selectLess i j = if a.[i] < a.[j] then i else j fi;
+       (selectLess i j = if a[i] < a[j] then i else j fi;
         swapMin i = swapAt a i (fold selectLess i [i + 1 .. length a - 1]);
         for [0 .. length a - 2] swapMin);
 
@@ -1221,7 +1222,7 @@ This algorithm can be easily tested in the interactive environment::
 
     > a = array [3,1,14,7,15,2,9,12,6,10,5,8,11,4,13]
     a is array<number> = [3,1,14,7,15,2,9,12,6,10,5,8,11,4,13]
-    > selectLess i j = if a.[i] < a.[j] then i else j fi;
+    > selectLess i j = if a[i] < a[j] then i else j fi;
     selectLess is number -> number -> number = <code$selectLess>
     > swapMin i = swapAt a i (fold selectLess i [i + 1 .. length a - 1]);
     swapMin is number -> () = <code$swapMin>
@@ -1258,14 +1259,14 @@ The ``[:]`` literal is an empty map constructor.
 
 The map can be referenced by key in a same way as arrays by index::
 
-    > h.["foo"]
+    > h["foo"]
     42 is number
-    > h.["bar"]
+    > h["bar"]
     13 is number
 
 Attempt to read non-existing key from map results in error::
 
-    > h.["zoo"]
+    > h["zoo"]
     yeti.lang.NoSuchKeyException: Key not found (zoo)
             at yeti.lang.Hash.vget(Hash.java:52)
             at code.apply(<>:1)
@@ -1282,8 +1283,8 @@ Existence of a key in the map can be checked using **in** operator::
 
 Existing keys can be modified and new ones added using assignment::
 
-    > h.["bar"] := 11
-    > h.["zoo"] := 666
+    > h["bar"] := 11
+    > h["zoo"] := 666
     > h
     ["zoo":666,"foo":42,"bar":11] is hash<string, number>
 
@@ -1323,7 +1324,7 @@ Maps can be iterated using ``forHash`` and ``mapHash`` functions::
 
 The main difference between ``forHash`` and ``mapHash`` is that ``mapHash``
 creates a list from the values returned by the given function.
-They are also similar to the correspondending ``for`` and ``map`` functions -
+They are also similar to the corresponding ``for`` and ``map`` functions -
 the hash-map variants just take two-argument function, so they can give both
 the key and value as arguments to it.
 
@@ -1347,16 +1348,16 @@ they are requested. This is done using ``setHashDefault`` function::
     > dh = [:]
     dh is hash<'a, 'b> = [:]
     > setHashDefault dh negate
-    > dh.[33]
+    > dh[33]
     -33 is number
 
 The default fun will be used only when the queried key don't exist in the map.
 ::
 
-    > dh.[33] := 11
-    > dh.[33]
+    > dh[33] := 11
+    > dh[33]
     11 is number
-    > dh.[32]
+    > dh[32]
     -32 is number
 
 The ``negate`` default was not used, when the ``33`` key was put into the map.
@@ -1368,9 +1369,9 @@ give different results::
     > var counter is number = 0
     var counter is number = 0
     > setHashDefault dh \(counter := counter + 1; counter)
-    > dh.[5]
+    > dh[5]
     1 is number
-    > dh.[5]
+    > dh[5]
     2 is number
     > dh
     [33:11] is hash<number, number>
@@ -1381,16 +1382,16 @@ if the function updates the map by itself.
 
     > fibs = [0: 0, 1: 1]
     fibs is hash<number, number> = [0:0,1:1]
-    > calcFib x = (fibs.[x] := fibs.[x - 1] + fibs.[x - 2]; fibs.[x])
+    > calcFib x = (fibs[x] := fibs[x - 1] + fibs[x - 2]; fibs[x])
     calcFib is number -> number = <code$calcFib>
     > setHashDefault fibs calcFib
     > map (at fibs) [0..10]
     [0,1,1,2,3,5,8,13,21,34,55] is list<number>
-    > fibs.[100]
+    > fibs[100]
     354224848179261915075 is number
 
 Here the ``calcFib`` function will cause calculation of previous values
-and then stores the result. Because the result is stored, futher
+and then stores the result. Because the result is stored, further
 requests for the same value will be not calculated again, avoiding
 the exponential time complexity of the naive recursive algorithm.
 The algorithm remains non-tail-recursive, though.
@@ -1428,7 +1429,7 @@ to an array expecting function::
 
 Important part is the second line of the error message which states that
 the error is in *list* not being an *hash*. Type parameters are missing
-there because the error occured on unifying the map kind parameter in
+there because the error occurred on unifying the map kind parameter in
 hash<> and array<>, not in unifying themselves (they are both maps!) -
 meaning the mismatching types were really the *list marker* and
 *hash marker*.
@@ -1476,8 +1477,8 @@ operator - a field name prefixed with dot. You may put whitespace before
 or after the dot, but if there is whitespace on both sides of the dot, it
 will be parsed as a function composition operator. It is not recommended
 to put any whitespace around the field reference dot unless there is line
-break (in which case the linebreak is best put before the dot).
-Attempt to use non-existent fields unsuprisingly results in a compile error.
+break (in which case the line break is best put before the dot).
+Attempt to use non-existent fields unsurprisingly results in a compile error.
 
 Structure types are polymorphic - for example a function taking structure
 as an argument can be given any structure that happens to contain the
@@ -1649,7 +1650,7 @@ mutable fields by prefixing the field bindings with the **var** keyword.
     > ev.what := "fubar"
     1:9: Non-mutable expression on the left of the assign operator :=
 
-The mutable fields can be assigned with ordinary assignement operator
+The mutable fields can be assigned with ordinary assignment operator
 similarly to ordinary variables and array or hash references. Attempt
 to modify immutable field results in an error.
 
@@ -1672,9 +1673,9 @@ the unit argument { get time () = ... } .
 
 Their counterparts are mutators. They are also function fields but prefixed
 with **set**, and are invoked with the assignment operator like the
-assigment to a **var** field::
+assignment to a **var** field::
 
-    > st = (var private = 2; {get value () = private, set value v = private := v})
+    > st = (var priv = 2; {get value () = priv, set value v = priv := v})
     st is {var value is number} = {value=2}
     > st.value
     2 is number
@@ -1758,6 +1759,111 @@ The ``splitAt`` is a standard function which returns structure containing
 first n elements from list as ``fst`` field and the rest as the ``snd``
 field.
 
+Overriding using 'with'
+++++++++++++++++++++++++
+
+A structure can be merged/overridden with another structure using the ``with`` 
+keyword::
+
+    > {a="foo", b=2} with {b=3,c = true}
+    {a="foo", b=3, c=true} is {
+       a is string,
+       b is number,
+       c is boolean
+    }
+
+The ``with`` keyword creates a new structure with all the fields of the first 
+structure and all the fields of the second structure. The fields of the second 
+structure override the once of the first. 
+
+The original structures keep unchanged::
+
+    > st1 = {a = "foo",b=2}
+    st1 is {a is string, b is number} = {a="foo", b=2}
+    
+    > st2 = {b="foob", c=false}
+    st2 is {b is string, c is boolean} = {b="foob", c=false}
+    
+    > str3 = st1 with st2
+    str3 is {
+       a is string,
+       b is string,
+       c is boolean
+    } = {a="foo", b="foob", c=false}
+    
+    > st1
+    {a="foo", b=2} is {a is string, b is number}
+    
+    > st2
+    {b="foob", c=false} is {b is string, c is boolean}
+
+Overriding can also change type::
+
+    > st = {a = 12}
+    st is {a is number} = {a=12}
+    > st with {a = "foo"}
+    {a="foo"} is {a is string}
+
+This functionality allows doing simple prototype OO inheritance. See the
+prototype example: 
+http://github.com/mth/yeti/blob/master/examples/prototype.yeti
+
+The example contains both inheritance with overriding and a abstract 
+callback (method). This kind of OO implementation separates strictly 
+callback functions consumed by object and the interface that object 
+provides to its users. 
+
+When using ``with`` on a function argument, the argument requires all fields
+of the merged structure. In this case overriding with same type works::
+
+    > f x = x with {a = 42}
+    f is ({.a is number} is 'a) -> 'a = <code$f>
+
+    > f {a = 12,b = "foo"}
+    {b="foo",a=42} is {`a is number, b is string}
+
+However if the field is not provided with the right type it does not compile::
+
+    > f x = x with {a = 42}
+    f is {.a is number} -> {.a is number} = <code$f>
+    
+    > f {b = 12}
+    1:3: Cannot apply {.a is number} -> {.a is number} function (f)
+    to {b is number} argument
+        Type mismatch: {b is number} => {.a is number} (member missing: a)
+    
+    > f {a="foo"}
+    1:3: Cannot apply {.a is number} -> {.a is number} function (f)
+    to {a is string} argument
+        Type mismatch: number is not string
+
+Adding members or changing type won't work in this case, as the function 
+signature restricts argument and result types to be same (which is needed 
+for fields that were not known in the function).
+
+Also the right-hand side must be a structure with known member set. Therefore
+the following does not compile::
+
+    > g x = {a = 2} with x
+    1:20: Right-hand side of with must be a structure with known member set
+
+Note that the ``known-memeber-set`` does not have to be a structure 
+literal it can also be a function with a known result-type::
+
+    > rightHand a b = {a, b}
+    rightHand is 'a -> 'b -> {a is 'a, b is 'b} = <code$rightHand>
+    
+    > fn a b c = c with (rightHand a b)
+    fn is 'a -> 'b -> {.a is 'a, .b is 'b} -> {.a is 'a, .b is 'b} = <code$fn>
+    
+    > fn 2 "foo" {a = 3, b = "tmp", c=true}
+    {a=2, b="foo", c=true} is {
+       `a is number,
+       `b is string,
+       c is boolean
+    }
+
+
 .. _variant type:
 
 Variant types
@@ -1798,7 +1904,8 @@ be one of the tags in the variant set.
 
     > describe (Weight 33)
     1:18: Cannot apply Weight number to Color string | Length number -> string
-        Type mismatch: Color string | Length number => Weight number (member missing: Weight)
+        Type mismatch: Color string | Length number => Weight number
+        (member missing: Weight)
 
 Compiler gives an error, because Weight is not one of the tags in the variant
 type of the ``describe`` functions argument.
@@ -1828,7 +1935,7 @@ Yeti don't really support it, but it can be emulated with variants::
 
 This has the advantage, that the values that might be missing have a
 variant type and therefore the typesystem can ensure that they won't
-be used without checking their existance. Which should remove a common
+be used without checking their existence. Which should remove a common
 source of the ``NullPointerException`` errors.
 
 The ``maybePrint`` function can be written in somewhat simpler manner, because
@@ -1863,10 +1970,11 @@ The previous value tagging examples, like ``Color "green"``, did look
 quite like an application. In fact this tagging is application - any
 uppercase-starting identifier is a tag constructor and any tag constructor
 is a function, when used in an expression.
+
 ::
 
     > Color
-    <yeti.lang.TagCon> is 'a -> Color 'a
+    Color is 'a -> Color 'a
     > Color "green"
     Color "green" is Color string
     > Color 42
@@ -1938,7 +2046,7 @@ Although this joining can be done more efficiently using ``strJoin``::
 
 Structures can be matched as well::
 
-    > pointStr p = case p of {x = 0, y = 0}: "point zero!"; {x, y}: "\(x), \(y)" esac
+    > pointStr = \case of {x = 0, y = 0}: "point zero!"; {x, y}: "\(x), \(y)" esac
     pointStr is {.x is number, .y is number} -> string = <code$pointStr>
     > pointStr {x = 11, y = 2}
     "11, 2" is string
@@ -1954,6 +2062,36 @@ Partial matches are not allowed::
 
 Here the compiler deduces, that no meaningful result value was given
 to the case, when ``n != 1``.
+
+Function pattern matching
+++++++++++++++++++++++++++++
+
+The `shorthand function literal`_ syntax using ``\`` can be combined
+with case pattern matching. This can be used to write the previous carrots
+example in a bit shorter form::
+
+    > carrots = \case of 1: "1 carrot"; n: "\(n) carrots" esac
+    carrots is number -> string = <code$carrots>
+    > carrots 1
+    "1 carrot" is string
+
+The implicit argument of the function literal defined by ``\`` is used
+as the argument of the case expression, if there is no expression given
+between the **case** and **of** keywords. Therefore the general form of
+function pattern matching::
+
+    \case of
+     patterns...
+     esac
+
+is equivalent to the longer combination of case expression nested in the
+do block::
+
+    do argument:
+        case argument of
+        patterns...
+        esac
+    done
 
 Type declarations
 ~~~~~~~~~~~~~~~~~~~~
@@ -2123,9 +2261,6 @@ type-parameters in type-declarations.
  
 Multiple type parameters are separated by comma like ie in hash<'a, 'b>.
 
-Type-aliases have to be defined at the top-level in a module and therefore can
-not be defined in the REPL.
-
 They can only be used in the module in which they are defined.
 
 Type-aliases are used in type declarations like any of the build in types of
@@ -2156,6 +2291,167 @@ name - to the compiler it is always the same::
     > fun2
     <code$fun3> is string -> string
 
+It is possible to see typedef definitions in REPL by typing the alias name
+followed by ``is``::
+
+    > openOutFile
+    <yeti.lang.io$openOutFile> is string -> string -> output_handle
+    > output_handle is
+    {
+       close is () -> (),
+       flush is () -> (),
+       write is string -> (),
+       writeln is string -> ()
+    }
+
+Type Aliases using 'shared'
++++++++++++++++++++++++++++++
+
+Often types are quite complex, and writing the ``typedef`` is therefore much 
+code, which is annoying, when you know that yeti already infers the right type.
+
+Therefore alias types can be implicitly defined using the ``typedef shared``
+definition.
+
+Lets say we have cowboys and horses, and want to map their respective 
+relatives::
+
+    program cowboys;
+
+    createCowboy name = {
+        id = -1,
+        name is string,
+        posts = [] is list<{
+             id is string,
+             text is string,
+             rating is number,
+        }>,
+        active = true,
+        relatives = [] //other cowboys only
+    };
+
+    createHorse name price = {
+        name is string,
+        price is number,
+        relatives = [] //other horses only
+    };
+
+    addCowboyRelative toAdd addTo = 
+        addTo with {
+             relatives = toAdd :: addTo.relatives
+        };
+
+    addHorseRelative toAdd addTo =
+        addTo with {
+            relatives = toAdd :: addTo.relatives
+        };
+
+    john = addCowboyRelative (createHorse "Blacky" 1000) 
+                             (createCowboy "John");
+
+    println john;
+
+Now we have a problem because the above compiles fine and the cowboy John 
+has the horse Blacky as his relative.
+        
+We could use ``typedef`` like described in the previous paragraph
+to make sure that addCowboyRelative only takes cowboys as argument,
+but this would more or less just repeat the createCowboy
+function, and we would have to do the same for horses.
+
+Instead we can use ``typedef shared`` to say that the return type of 
+``createCowboy`` should be same as the argument types of ``addCowboyRelative``::
+
+    typedef shared cowboy = 'a;
+    typedef shared horse = 'a;
+
+    createCowboy name is string -> cowboy = {
+        .....
+        relatives = [] is list<cowboy>
+    };
+
+    createHorse name price is string -> number -> horse = {
+        ....
+    };
+
+    addCowboyRelative toAdd addTo is cowboy -> cowboy -> cowboy = 
+        ...;
+
+    addHorseRelative toAdd addTo is horse -> horse -> horse =
+        ...;
+
+    //this does now not compile anymore:
+    john = addCowboyRelative (createHorse "Blacky" 1000) 
+                             (createCowboy "John");
+
+    println john;
+
+Now we get a compile-error::
+
+    C:\TEMP>java -jar C:\yeti\yeti.jar cowboys.yeti
+    cowboys.yeti:34:52: Cannot apply cowboy -> cowboy -> cowboy function 
+    (addCowboyRelative) to horse argument
+        Type mismatch: horse => cowboy (member missing: posts)
+
+
+Opaque Types
++++++++++++++++
+
+The usual typedef - like described in the previous two paragraphs - defines a 
+named alias for some type, that can be used interchangeably with the original 
+type.
+
+The opaque typedef defines a completely new unique type, 
+that is incompatible with the one used in the definition. 
+
+It has the word ``opaque`` before the type name like:: 
+
+    typedef opaque foo = something 
+
+For example you write in REPL:: 
+
+    > typedef opaque foo = number; 1 is foo 
+    1:32: Type mismatch: number is not foo (when checking number is foo) 
+
+The new types can be put in use with as cast, like:: 
+
+    > typedef opaque foo = number; 1 as foo 
+    1 is [code:foo#0]<> 
+
+It's useful if you want to hide actual implementation types. 
+Yeti supports hiding implementation using closures and structs, additional 
+opaque types can hide the underlying types also (an additional benefit is 
+that opaque types have zero runtime overhead as they don't exist at 
+runtime):: 
+
+    module opaquelist; 
+
+    typedef opaque magic<x> = list<x> 
+
+    { 
+         create l is list<'a> -> list<'a> = l, 
+         values v is list<'a> -> list<'a> = v, 
+    } as { 
+         create is list<'a> -> magic<'a>, 
+         values is magic<'b> -> list<'b>, 
+    } 
+
+In the above example a new type ``magic<a>`` together with conversion 
+functions is defined, which implementation-wise is just a ``list<a>``. However 
+it is completely different type from ``list<a>``, as you can see
+in the following example::
+
+       load opaquelist; 
+        
+       v = create ["foo", "bar"]; 
+        
+       // have to first convert 'v' back to list
+       // because 'for v println;' would not compile as v is no list 
+       for (values v) println; 
+       
+Opaque types are also useful to hide Java classes and to include
+type variables with them.
+
 
 Running and compiling source files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2175,7 +2471,7 @@ of simple ``yeti.jar`` in the above command. The ``hello.yeti`` file is also
 expected to be in the current directory (although path to it could be given).
 After that a text ``Hello world!`` should be printed on the console.
 
-Yeti actually never interpretates the source code. It just compiles the
+Yeti actually never interprets the source code. It just compiles the
 code into Java bytecode and classes in the memory, uses classloader to load
 these generated classes and then just invokes the code in them. So the
 only possible interpretation of the code is bytecode interpretation done
@@ -2183,7 +2479,7 @@ by the JVM (which is also able to JIT-compile it to native machine code).
 
 This compilation to bytecode happens even in the interactive REPL environment -
 any expression evaluated there will be compiled into JVM classes.
-Yeti has only compiler and no interpretator (this is so to simplify the
+Yeti has only compiler and no interpreter (this is so to simplify the
 implementation).
 
 It is possible to only compile the Yeti code into Java ``.class`` files
@@ -2216,7 +2512,7 @@ The message ``Hello World Again!`` should be printed to the console.
 
 The content of the source file containing a program is considered to be one
 expression (ignoring the ``program`` header), which is evaluated when
-the program is runned. The type of the expression must be the unit type.
+the program is ran. The type of the expression must be the unit type.
 
 Modules
 ~~~~~~~~~~
@@ -2360,7 +2656,7 @@ Now make an empty directory, go there and try to compile the
     java -classpath ../yeti.jar:../bt-test:. bttest
 
 It should again give the ``[true,false]`` test output. To verify, that
-the compiled module was realy used, you could try to omit the ``-cp`` option
+the compiled module was really used, you could try to omit the ``-cp`` option
 from compiler command line::
 
     java -jar ../yeti.jar -d . ../bttest.yeti
@@ -2506,7 +2802,7 @@ Those casts done on the method arguments can be done by hand using
 
 Arrays of Java objects can be wrapped into Yeti arrays::
 
-    > wrapArray ("some test" as ~java.lang.String)#split(" ")
+    > ("some test" as ~java.lang.String)#split(" ") as array<'a>
     ["some","test"] is array<~java.lang.String>
 
 Sometimes you want to give null pointer to a Java method. This can be
@@ -2543,6 +2839,28 @@ unsafe cast, because such casts allow circumventing the Yeti typesystem
     java.lang.ClassCastException: java.lang.String cannot be cast to yeti.lang.Num
             at code.apply(<>:1)
             ...
+
+Note that there is a fundamental difference between ``as`` and ``unsafely_as`` -
+the ``as`` cast may convert the value into different runtime representation,
+but allows only such casts/conversions, which always succeed (won't throw
+exceptions other than running out of memory). The ``unsafely_as`` cast is the
+opposite - it always returns the same runtime instance as was given, but
+may fail with ClassCastException, when the cast is impossible to do (exactly
+like Java casts - it uses the low-level JVM checkcast instruction).
+
+The ``unsafely_as`` cast should be used with care, as it allows forcing
+types in unsound ways (as can be seen in the above example where string was
+added into array<number>).
+
+``as`` and ``unsafley_as`` can also be used as functions using the 
+section-syntax ie ``(as ~Object)`` or ``(unsafely_as string)```::
+
+
+    > map ((unsafely_as ~yeti.lang.Num) . (as ~Object)) [1..10]
+    [1,2,3,4,5,6,7,8,9,10] is list<~yeti.lang.Num>
+    
+    
+
 
 Defining Java classes in Yeti code
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2817,7 +3135,7 @@ When to use Java class definitions
 ++++++++++++++++++++++++++++++++++++++
 
 The ability to define Java classes in Yeti code is mostly useful for
-interfaceing with a Java code and declaring custom exception classes.
+interfacing with a Java code and declaring custom exception classes.
 
 Yeti don't have any other exception handling mechanism than try-catch
 blocks that work with Java exception classes - so to define any
@@ -2891,7 +3209,7 @@ systems and editors.
 
 Identifiers should be written in camelCaseStyle.
 
-Operators should be surrounded with whitespace (with expection of
+Operators should be surrounded with whitespace (with expectation of
 the dereferencing dot, which should have no whitespace around it).
 Line breaks should be generally put before operators.
 
@@ -3010,5 +3328,5 @@ should be written with each field on the separate line::
             fi,
     }
 
-The empty line is used to visually separate the multiline function definiton.
+The empty line is used to visually separate the multi-line function definition.
 

@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2007,2008,2009 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,7 +31,7 @@
 
 package yeti.lang.compiler;
 
-import yeti.renamed.asm3.*;
+import yeti.renamed.asmx.*;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -51,10 +51,7 @@ final class BuiltIn implements Binder {
     public BindRef getRef(int line) {
         BindRef r = null;
         switch (op) {
-        case 1:
-            r = new Argv();
-            r.type = YetiType.STRING_ARRAY;
-            break;
+        //case 1: WAS ARGV
         case 2:
             r = new InOpFun(line);
             break;
@@ -115,47 +112,21 @@ final class BuiltIn implements Binder {
         case 21:
             r = new Same();
             break;
-        case 22:
-            r = new StaticRef("yeti/lang/Core", "RANDINT",
-                              YetiType.NUM_TO_NUM, this, true, line);
-            break;
         case 23:
             r = undef_str(this, line);
             break;
         case 24:
             r = new Escape(line);
             break;
+        case 25:
+            r = new Length();
+            break;
+        case 26:
+            r = new Throw(line);
+            break;
         }
         r.binder = this;
         return r;
-    }
-}
-
-final class Argv extends BindRef implements CodeGen {
-    void gen(Ctx ctx) {
-        ctx.fieldInsn(GETSTATIC, "yeti/lang/Core",
-                             "ARGV", "Ljava/lang/ThreadLocal;");
-        ctx.methodInsn(INVOKEVIRTUAL,
-            "java/lang/ThreadLocal",
-            "get", "()Ljava/lang/Object;");
-    }
-
-    public void gen2(Ctx ctx, Code value, int line) {
-        ctx.fieldInsn(GETSTATIC, "yeti/lang/Core",
-                     "ARGV", "Ljava/lang/ThreadLocal;");
-        value.gen(ctx);
-        ctx.methodInsn(INVOKEVIRTUAL,
-            "java/lang/ThreadLocal",
-            "get", "(Ljava/lang/Object;)V");
-        ctx.insn(ACONST_NULL);
-    }
-
-    Code assign(final Code value) {
-        return new SimpleCode(this, value, null, 0);
-    }
-
-    boolean flagop(int fl) {
-        return (fl & (ASSIGN | DIRECT_BIND)) != 0;
     }
 }
 
@@ -164,11 +135,10 @@ class IsNullPtr extends StaticRef {
     boolean normalIf;
 
     IsNullPtr(YType type, String fun, int line) {
-        super("yeti/lang/std$" + fun, "_", type, null, true, line);
+        super(fun, type, true, line);
     }
 
-    Code apply(final Code arg, final YType res,
-               final int line) {
+    Code apply(final Code arg, final YType res, final int line) {
         return new Code() {
             { type = res; }
 
@@ -234,8 +204,7 @@ final class IsEmpty extends IsNullPtr {
         ctx.jumpInsn(IFNULL, isNull);
         if (ctx.compilation.isGCJ)
             ctx.typeInsn(CHECKCAST, "yeti/lang/Coll");
-        ctx.methodInsn(INVOKEINTERFACE, "yeti/lang/Coll",
-                            "isEmpty", "()Z"); 
+        ctx.methodInsn(INVOKEINTERFACE, "yeti/lang/Coll", "isEmpty", "()Z");
         ctx.jumpInsn(IFNE, ifTrue ? to : end);
         ctx.jumpInsn(GOTO, ifTrue ? end : to);
         ctx.visitLabel(isNull);
@@ -280,6 +249,21 @@ final class Tail extends IsNullPtr {
     }
 }
 
+final class Throw extends IsNullPtr {
+    Throw(int line) {
+        super(YetiType.THROW_TYPE, "throw", line);
+    }
+
+    void gen(Ctx ctx, Code arg, int line) {
+        arg.gen(ctx);
+        ctx.visitLine(line);
+        JavaType t = arg.type.deref().javaType;
+        ctx.typeInsn(CHECKCAST,
+                     t != null ? t.className() : "java/lang/Throwable");
+        ctx.insn(ATHROW);
+    }
+}
+
 final class Escape extends IsNullPtr {
     Escape(int line) {
         super(YetiType.WITH_EXIT_TYPE, "withExit", line);
@@ -296,8 +280,7 @@ final class Escape extends IsNullPtr {
 
 final class Negate extends StaticRef implements CodeGen {
     Negate() {
-        super("yeti/lang/std$negate", "_", YetiType.NUM_TO_NUM,
-              null, false, 0);
+        super("negate", YetiType.NUM_TO_NUM, false, 0);
     }
 
     public void gen2(Ctx ctx, Code arg, int line) {
@@ -319,28 +302,113 @@ final class Negate extends StaticRef implements CodeGen {
     }
 }
 
+final class Length extends StaticRef {
+    Length() {
+        super("length", YetiType.MAP_TO_NUM, true, 0);
+    }
+
+    void genLong(Ctx ctx, Code arg, int line, boolean toint) {
+        if (arg instanceof Cast) {
+            Code obj = ((Cast) arg).object;
+            YType t = obj.type.deref();
+            if (t.type == YetiType.JAVA_ARRAY) {
+                obj.gen(ctx);
+                ctx.typeInsn(CHECKCAST, JavaType.descriptionOf(t));
+                ctx.visitLine(line);
+                ctx.insn(ARRAYLENGTH);
+                if (!toint)
+                    ctx.insn(I2L);
+                return;
+            }
+        }
+        Label nonnull = new Label(), end = new Label();
+        arg.gen(ctx);
+        ctx.visitLine(line);
+        // arrays can't be null, other can
+        if (arg.type.deref().param[1].deref() != YetiType.NUM_TYPE) {
+            ctx.insn(DUP);
+            ctx.jumpInsn(IFNONNULL, nonnull);
+            ctx.insn(POP);
+            if (toint)
+                ctx.intConst(0);
+            else
+                ctx.ldcInsn(new Long(0));
+            ctx.jumpInsn(GOTO, end);
+            ctx.visitLabel(nonnull);
+        }
+        if (ctx.compilation.isGCJ)
+            ctx.typeInsn(CHECKCAST, "yeti/lang/Coll");
+        ctx.methodInsn(INVOKEINTERFACE, "yeti/lang/Coll", "length", "()J");
+        if (toint)
+            ctx.insn(L2I);
+        ctx.visitLabel(end);
+    }
+
+    Code apply(final Code arg, final YType res, final int line) {
+        return new Code() {
+            { type = res; }
+
+            void gen(Ctx ctx) {
+                ctx.typeInsn(NEW, "yeti/lang/IntNum");
+                ctx.insn(DUP);
+                genLong(ctx, arg, line, false);
+                ctx.visitInit("yeti/lang/IntNum", "(J)V");
+                ctx.forceType("yeti/lang/Num");
+            }
+
+            void genInt(Ctx ctx, int line_, boolean longValue) {
+                genLong(ctx, arg, line, !longValue);
+            }
+
+            boolean flagop(int fl) {
+                return (fl & INT_NUM) != 0;
+            }
+        };
+    }
+}
+
 abstract class Core2 extends StaticRef {
     boolean derivePolymorph;
 
     Core2(String coreFun, YType type, int line) {
-        super("yeti/lang/std$" + coreFun, "_", type, null, true, line);
+        super(coreFun, type, true, line);
     }
 
     Code apply(final Code arg1, YType res, int line1) {
         return new Apply(res, this, arg1, line1) {
             Code apply(final Code arg2, final YType res,
                        final int line2) {
-                return new Code() {
-                    {
-                        type = res;
-                        polymorph = derivePolymorph && arg1.polymorph
-                                                    && arg2.polymorph;
+                class A extends Code implements CodeGen {
+                    public void gen2(Ctx ctx, Code param, int line) {
+                        genApply2(ctx, arg1, arg2, line2);
                     }
 
                     void gen(Ctx ctx) {
-                        genApply2(ctx, arg1, arg2, line2);
+                        if (prepareConst(ctx)) {
+                            Object[] key = { Core2.this.getClass(),
+                                             arg1.valueKey(), arg2.valueKey() };
+                            ctx.constant(Arrays.asList(key),
+                                    new SimpleCode(this, null, type, 0));
+                        } else {
+                            genApply2(ctx, arg1, arg2, line2);
+                        }
+                    }
+
+                    boolean flagop(int fl) {
+                        return derivePolymorph && (fl & (CONST | PURE)) != 0 &&
+                                arg1.flagop(fl) && arg2.flagop(fl);
+                    }
+
+                    boolean prepareConst(Ctx ctx) {
+                        return derivePolymorph && arg1.prepareConst(ctx) &&
+                                arg2.prepareConst(ctx);
                     }
                 };
+                A r = new A();
+                r.type = res;
+                r.polymorph = derivePolymorph && arg1.polymorph
+                                              && arg2.polymorph;
+                return r;
             }
         };
     }
@@ -356,8 +424,12 @@ final class For extends Core2 {
     void genApply2(Ctx ctx, Code list, Code fun, int line) {
         Function f;
         LoadVar arg = new LoadVar();
+        YType t;
         if (!list.flagop(LIST_RANGE) && fun instanceof Function &&
-                    (f = (Function) fun).uncapture(arg)) {
+                ((f = (Function) fun).body instanceof CaseExpr ||
+                 (t = list.type.deref()).type == YetiType.MAP &&
+                 t.param[1].deref().type == YetiType.NONE) &&
+                f.uncapture(arg)) {
             Label retry = new Label(), end = new Label();
             list.gen(ctx);
             ctx.visitLine(line);
@@ -365,8 +437,7 @@ final class For extends Core2 {
             ctx.insn(DUP);
             ctx.jumpInsn(IFNULL, end);
             ctx.insn(DUP);
-            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/AList",
-                                "isEmpty", "()Z");
+            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/AList", "isEmpty", "()Z");
             ctx.jumpInsn(IFNE, end);
             // start of loop
             ctx.visitLabel(retry);
@@ -510,8 +581,9 @@ abstract class BinOpRef extends BindRef {
     }
 
     void gen(Ctx ctx) {
-        ctx.fieldInsn(GETSTATIC, "yeti/lang/std$" + coreFun,
-                           "_", "Lyeti/lang/Fun;");
+        ctx.methodInsn(INVOKESTATIC, "yeti/lang/std",
+                       coreFun, "()Lyeti/lang/Fun;");
+        ctx.forceType("yeti/lang/Fun");
     }
 
     abstract void binGen(Ctx ctx, Code arg1, Code arg2);
@@ -543,8 +615,8 @@ final class ArithOpFun extends BinOpRef {
     }
 
     void binGen(Ctx ctx, Code arg1, Code arg2) {
-        if (method == "and" && arg2 instanceof NumericConstant &&
-            ((NumericConstant) arg2).flagop(INT_NUM)) {
+        boolean arg2IsInt = arg2.flagop(INT_NUM);
+        if (method == "and" && arg2IsInt) {
             ctx.typeInsn(NEW, "yeti/lang/IntNum");
             ctx.insn(DUP);
             arg1.gen(ctx);
@@ -552,7 +624,7 @@ final class ArithOpFun extends BinOpRef {
             ctx.typeInsn(CHECKCAST, "yeti/lang/Num");
             ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/Num",
                                 "longValue", "()J");
-            ((NumericConstant) arg2).genInt(ctx, false);
+            arg2.genInt(ctx, line, true);
             ctx.insn(LAND);
             ctx.visitInit("yeti/lang/IntNum", "(J)V");
             ctx.forceType("yeti/lang/Num");
@@ -561,15 +633,15 @@ final class ArithOpFun extends BinOpRef {
         arg1.gen(ctx);
         ctx.visitLine(line);
         ctx.typeInsn(CHECKCAST, "yeti/lang/Num");
-        boolean ii = method == "intDiv" || method == "rem";
         if (method == "shl" || method == "shr") {
-            ctx.genInt(arg2, line);
+            arg2.genInt(ctx, line, false);
             if (method == "shr")
                 ctx.insn(INEG);
             ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/Num",
-                                "shl", "(I)Lyeti/lang/Num;");
-        } else if (arg2 instanceof NumericConstant &&
-                 ((NumericConstant) arg2).genInt(ctx, ii)) {
+                           "shl", "(I)Lyeti/lang/Num;");
+        } else if (arg2IsInt) {
+            boolean ii = method == "intDiv" || method == "rem";
+            arg2.genInt(ctx, line, !ii);
             ctx.visitLine(line);
             ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/Num",
                 method, ii ? "(I)Lyeti/lang/Num;" : "(J)Lyeti/lang/Num;");
@@ -591,7 +663,7 @@ final class ArithOp implements Binder {
     private YType type;
 
     ArithOp(String op, String method, YType type) {
-        fun = op == "+" ? "plus" : Code.mangle(op);
+        fun = Code.mangle(op);
         this.method = method;
         this.type = type;
     }
@@ -671,7 +743,7 @@ final class CompareFun extends BoolBinOp {
             ctx.visitLine(line);
             if (arg2.flagop(INT_NUM)) {
                 ctx.typeInsn(CHECKCAST, "yeti/lang/Num");
-                ((NumericConstant) arg2).genInt(ctx, false);
+                arg2.genInt(ctx, line, true);
                 ctx.visitLine(line);
                 ctx.methodInsn(INVOKEVIRTUAL,
                         "yeti/lang/Num", "rCompare", "(J)I");
@@ -763,8 +835,7 @@ final class InOpFun extends BoolBinOp {
 
 final class NotOp extends StaticRef {
     NotOp(int line) {
-        super("yeti/lang/std$not", "_",
-              YetiType.BOOL_TO_BOOL, null, false, line);
+        super("not", YetiType.BOOL_TO_BOOL, false, line);
     }
 
     Code apply(final Code arg, YType res, int line) {
@@ -838,19 +909,25 @@ final class Cons extends BinOpRef {
     }
 
     void binGen(Ctx ctx, Code arg1, Code arg2) {
-        String lclass = "yeti/lang/LList";
-        if (arg2.type.deref().param[1].deref()
-                != YetiType.NO_TYPE) {
-            lclass = "yeti/lang/LMList";
-        }
         ctx.visitLine(line);
-        ctx.typeInsn(NEW, lclass);
+        ctx.typeInsn(NEW, "yeti/lang/LList");
         ctx.insn(DUP);
         arg1.gen(ctx);
         arg2.gen(ctx);
         ctx.visitLine(line);
         ctx.typeInsn(CHECKCAST, "yeti/lang/AList");
-        ctx.visitInit(lclass,
+        if (arg2.type.deref().param[1].deref() != YetiType.NO_TYPE) {
+            Label cons = new Label();
+            ctx.insn(DUP);
+            ctx.jumpInsn(IFNULL, cons); // null, ok
+            ctx.insn(DUP);
+            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/AList", "isEmpty", "()Z");
+            ctx.jumpInsn(IFEQ, cons); // not empty, ok
+            ctx.insn(POP); // empty not-null, dump it
+            ctx.insn(ACONST_NULL); // and use null instead
+            ctx.visitLabel(cons);
+        }
+        ctx.visitInit("yeti/lang/LList",
                       "(Ljava/lang/Object;Lyeti/lang/AList;)V");
         ctx.forceType("yeti/lang/AList");
     }
@@ -942,7 +1019,7 @@ final class RegexFun extends StaticRef implements CodeGen {
 
     RegexFun(String fun, String impl, YType type,
              Binder binder, int line) {
-        super("yeti/lang/std$" + fun, "_", type, null, false, line);
+        super(fun, type, false, line);
         this.funName = fun;
         this.binder = binder;
         this.impl = impl;
@@ -1062,7 +1139,7 @@ final class JavaArrayRef extends Code implements CodeGen {
     private void _gen(Ctx ctx, Code store) {
         value.gen(ctx);
         ctx.typeInsn(CHECKCAST, JavaType.descriptionOf(value.type));
-        ctx.genInt(index, line);
+        index.genInt(ctx, line, false);
         String resDescr = elementType.javaType == null
                             ? JavaType.descriptionOf(elementType)
                             : elementType.javaType.description;
@@ -1156,7 +1233,7 @@ final class StrOp extends StaticRef implements Binder {
             }
             if (argv.size() != argTypes.length) {
                 StrOp.this.gen(ctx);
-                for (int i = argv.size() - 1; --i >= 0;)
+                for (int i = argv.size(); --i >= 0;)
                     ((StrApply) argv.get(i)).genApply(ctx);
                 return;
             }
@@ -1186,7 +1263,7 @@ final class StrOp extends StaticRef implements Binder {
     }
 
     StrOp(String fun, String method, String sig, YType type) {
-        super("yeti/lang/std$" + mangle(fun), "_", type, null, false, 0);
+        super(mangle(fun), type, false, 0);
         this.method = method;
         this.sig = sig;
         binder = this;
@@ -1218,7 +1295,7 @@ final class StrChar extends BinOpRef {
     void binGen(Ctx ctx, Code arg1, Code arg2) {
         arg1.gen(ctx);
         ctx.typeInsn(CHECKCAST, "java/lang/String");
-        ctx.genInt(arg2, line);
+        arg2.genInt(ctx, line, false);
         ctx.insn(DUP);
         ctx.intConst(1);
         ctx.insn(IADD);

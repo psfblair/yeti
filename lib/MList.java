@@ -31,6 +31,8 @@
 package yeti.lang;
 
 import java.util.Arrays;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.io.Serializable;
 
 abstract class AMList extends AList implements Serializable {
@@ -39,11 +41,13 @@ abstract class AMList extends AList implements Serializable {
     abstract int _size();
     abstract Object[] array();
 
-    public final long length() {
+    // used by length
+    public long length() {
         int l = _size() - start;
         return l > 0 ? l : 0;
     }
 
+    // used by copy
     public Object copy() {
         Object[] a = new Object[_size()];
         System.arraycopy(array(), start, a, 0, a.length);
@@ -61,27 +65,23 @@ abstract class AMList extends AList implements Serializable {
     }
 
     public boolean equals(Object obj) {
-        if (obj == null) {
+        if (obj == null)
             return _size() <= start;
-        }
         if (obj instanceof AMList) {
             AMList o = (AMList) obj;
             int cnt = _size();
-            if (cnt - start != o._size() - o.start) {
+            if (cnt - start != o._size() - o.start)
                 return false;
-            }
             Object[] arr = array(), arr_ = o.array();
             for (int i = start, j = o.start; i < cnt; ++i, ++j) {
                 Object a = arr[i], b = arr_[j];
-                if (a != b && (a == null || !a.equals(b))) {
+                if (a != b && (a == null || !a.equals(b)))
                     return false;
-                }
             }
             return true;
         }
-        if (!(obj instanceof AList)) {
+        if (!(obj instanceof AList))
             return false;
-        }
         Object[] array = array();
         AIter j = (AList) obj;
         Object x, y;
@@ -100,9 +100,8 @@ abstract class AMList extends AList implements Serializable {
         Object[] array = array();
         StringBuffer buf = new StringBuffer("[");
         for (int cnt = _size(), i = start; i < cnt; ++i) {
-            if (i > start) {
+            if (i > start)
                 buf.append(',');
-            }
             buf.append(Core.show(array[i]));
         }
         buf.append(']');
@@ -112,16 +111,14 @@ abstract class AMList extends AList implements Serializable {
     public void forEach(Object fun) {
         Fun f = (Fun) fun;
         Object[] array = array();
-        for (int cnt = _size(), i = start; i < cnt; ++i) {
+        for (int cnt = _size(), i = start; i < cnt; ++i)
             f.apply(array[i]);
-        }
     }
 
     public Object fold(Fun f, Object v) {
         Object[] array = array();
-        for (int cnt = _size(), i = start; i < cnt; ++i) {
+        for (int cnt = _size(), i = start; i < cnt; ++i)
             v = f.apply(v, array[i]);
-        }
         return v;
     }
 
@@ -129,18 +126,14 @@ abstract class AMList extends AList implements Serializable {
         Object[] array = array();
         int cnt = _size();
         if (v == null) {
-            for (int i = start; i < cnt; ++i) {
-                if (array[i] == null) {
+            for (int i = start; i < cnt; ++i)
+                if (array[i] == null)
                     return new IntNum(i - start);
-                }
-            }
             return null;
         }
-        for (int i = start; i < cnt; ++i) {
-            if (v.equals(array[i])) {
+        for (int i = start; i < cnt; ++i)
+            if (v.equals(array[i]))
                 return new IntNum(i - start);
-            }
-        }
         return null;
     }
 
@@ -150,9 +143,8 @@ abstract class AMList extends AList implements Serializable {
             return null;
         Object[] array = array();
         Object[] result = new Object[cnt - start];
-        for (int i = start; i < cnt; ++i) {
+        for (int i = start; i < cnt; ++i)
             result[i - start] = f.apply(array[i]);
-        }
         return new MList(result);
     }
 
@@ -263,6 +255,21 @@ public class MList extends AMList implements ByKey {
             return array;
         }
 
+        public AList take(int from, int count) {
+            if (from < 0)
+                from = 0;
+            from += start;
+            if (count < 0)
+                return from < size ? from == start
+                        ? this : new SubList(from) : null;
+            if ((count += start) > size)
+                count = size;
+            MList res = new MList(array);
+            res.start = from;
+            res.size = count;
+            return res;
+        }
+
         public AList find(Fun pred) {
             for (int cnt = size, i = start; i < cnt; ++i) {
                 if (pred.apply(array[i]) == Boolean.TRUE) {
@@ -295,6 +302,20 @@ public class MList extends AMList implements ByKey {
         public boolean isEmpty() {
             return i >= size;
         }
+
+        public AIter dup() {
+            return new Iter(i);
+        }
+
+        AIter write(OutputStream out) throws IOException {
+            if (i < size) {
+                byte[] tmp = new byte[size - i];
+                for (int off = i, j = 0; j < tmp.length; ++j)
+                    tmp[j] = ((Number) array[j + off]).byteValue();
+                out.write(tmp);
+            }
+            return null;
+        }
     }
 
     public MList() {
@@ -318,7 +339,8 @@ public class MList extends AMList implements ByKey {
         }
     }
 
-    public final void reserve(int n) {
+    // used by setArrayCapacity
+    public void reserve(int n) {
         if (n > array.length) {
             Object[] tmp = new Object[n];
             System.arraycopy(array, 0, tmp, 0, size);
@@ -326,7 +348,8 @@ public class MList extends AMList implements ByKey {
         }
     }
 
-    public final void add(Object o) {
+    // used by push
+    public void add(Object o) {
         if (size >= array.length) {
             Object[] tmp = new Object[size == 0 ? 10 : size * 3 / 2 + 1];
             System.arraycopy(array, 0, tmp, 0, array.length);
@@ -335,80 +358,88 @@ public class MList extends AMList implements ByKey {
         array[size++] = o;
     }
 
-    public final Object shift() {
-        if (start >= size) {
+    // used by shift
+    public Object shift() {
+        if (start >= size)
             throw new EmptyArrayException("No first element in empty array");
-        }
         return array[start++];
     }
 
-    public final Object pop() {
-        if (start >= size) {
+    // used by pop
+    public Object pop() {
+        if (start >= size)
             throw new EmptyArrayException("Cannot pop from an empty array");
-        }
         return array[--size];
     }
 
-    public final void clear() {
+    // used by clear
+    public void clear() {
         start = size = 0;
     }
 
-    public final Object first() {
-        if (start >= size) {
+    // used by head
+    public Object first() {
+        if (start >= size)
             throw new EmptyArrayException("No first element in empty array");
-        }
         return array[start];
     }
 
-    public final AList rest() {
+    // used by tail
+    public AList rest() {
         int p;
         return (p = start + 1) < size ? new SubList(p) : null;
     }
 
-    public final AIter next() {
+    // used for iterating lists
+    public AIter next() {
         int p;
         return (p = start + 1) < size ? new Iter(p) : null;
     }
 
+    // used by compiler for i in a
     public boolean containsKey(Object index) {
         int i;
         return  (i = ((Number) index).intValue()) >= 0 && i + start < size;
     }
 
-    public final Object vget(Object index) {
+    // used by compiler for a[i]
+    public Object vget(Object index) {
         int i;
-        if ((i = ((Number) index).intValue()) < 0) {
+        if ((i = ((Number) index).intValue()) < 0)
             throw new NoSuchKeyException(i, size - start);
-        }
-        if ((i += start) >= size) {
+        if ((i += start) >= size)
             throw new NoSuchKeyException(i - start, size - start);
-        }
         return array[i];
     }
 
-    public final Object put(Object index, Object value) {
+    // used by compiler for a[number]
+    public Object get(int index) {
         int i;
-        if ((i = ((Number) index).intValue()) < 0) {
+        if (index < 0 || (i = index + start) >= size)
+            throw new NoSuchKeyException(index, size - start);
+        return array[i];
+    }
+
+    // used by compiler for a[i] := x
+    public Object put(Object index, Object value) {
+        int i;
+        if ((i = ((Number) index).intValue()) < 0)
             throw new NoSuchKeyException(i, size - start);
-        }
-        if ((i += start) >= size) {
+        if ((i += start) >= size)
             throw new NoSuchKeyException(i - start, size - start);
-        }
         array[i] = value;
         return null;
     }
 
-    public final Object remove(Object index) {
+    // used delete
+    public Object remove(Object index) {
         int i, n;
-        if ((i = ((Number) index).intValue()) < 0) {
+        if ((i = ((Number) index).intValue()) < 0)
             throw new NoSuchKeyException(i, size - start);
-        }
-        if ((i += start) >= size) {
+        if ((i += start) >= size)
             throw new NoSuchKeyException(i - start, size - start);
-        }
-        if ((n = --size - i) > 0) {
+        if ((n = --size - i) > 0)
             System.arraycopy(array, i + 1, array, i, n);
-        }
         return null;
     }
 
@@ -433,6 +464,7 @@ public class MList extends AMList implements ByKey {
         }
     }
 
+    // used by deleteAll
     public void removeAll(AList keys) {
         // a common use case is removing a single range
         if (keys instanceof ListRange) {
@@ -468,7 +500,8 @@ public class MList extends AMList implements ByKey {
         }
     }
 
-    protected MList copy(int from, int to) {
+    // used by slice
+    public MList copy(int from, int to) {
         int n = size - start;
         if (from < 0 || from > n)
             throw new NoSuchKeyException(from, n);
@@ -482,6 +515,23 @@ public class MList extends AMList implements ByKey {
         return new MList(subArray);
     }
 
+    // used by take
+    public AList take(int from, int count) {
+        if (from < 0)
+            from = 0;
+        from += start;
+        if (count < 0)
+            return from < size ? from == start
+                    ? this : (AList) new SubList(from) : null;
+        if ((count += start) > size)
+            count = size;
+        MList res = new MList(array);
+        res.start = from;
+        res.size = count;
+        return res;
+    }
+
+    // used by find
     public AList find(Fun pred) {
         for (int cnt = size, i = start; i < cnt; ++i) {
             if (pred.apply(array[i]) == Boolean.TRUE) {
@@ -491,7 +541,8 @@ public class MList extends AMList implements ByKey {
         return null;
     }
 
-    public final boolean isEmpty() {
+    // used by empty?
+    public boolean isEmpty() {
         return start >= size;
     }
 
@@ -541,5 +592,23 @@ public class MList extends AMList implements ByKey {
 
     public void setDefault(Fun fun) {
         throw new UnsupportedOperationException();
+    }
+
+    public Object[] toArray(Object[] to) {
+        System.arraycopy(array, start, to, 0, size - start);
+        return to;
+    }
+
+    public static MList ofList(AList list) {
+        if (list instanceof MList)
+            return (MList) list;
+        return new MList(list);
+    }
+
+    public static MList ofStrArray(Object[] array) {
+        Object[] tmp = new Object[array.length];
+        for (int i = 0; i < tmp.length; ++i)
+            tmp[i] = array[i] == null ? Core.UNDEF_STR : array[i];
+        return new MList(tmp);
     }
 }

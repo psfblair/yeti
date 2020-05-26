@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,27 +32,27 @@ package yeti.lang;
 
 /** Yeti core library - Map 2 lists. */
 final class Map2List extends LList {
-    private boolean mappedRest;
+    private AList rest;
     private AIter src;
     private AIter src2;
     private Fun f;
 
     public Map2List(Fun f, AIter src, AIter src2) {
-        super(((Fun) f.apply(src.first())).apply(src2.first()), null);
+        super(f.apply(src.first(), src2.first()), null);
         this.src = src;
         this.src2 = src2;
         this.f = f;
     }
 
     public synchronized AList rest() {
-        if (!mappedRest) {
+        if (f != null) {
             AIter i = src.next();
             AIter j = src2.next();
-            rest = i == null || j == null ? null : new Map2List(f, i, j);
+            if (i != null && j != null)
+                rest = new Map2List(f, i, j);
             src = null;
             src2 = null;
             f = null;
-            mappedRest = true;
         }
         return rest;
     }

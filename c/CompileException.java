@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2007,2008,2009 Madis Janson
+ * Copyright (c) 2007-2012 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,6 +37,7 @@ public class CompileException extends RuntimeException {
     int line;
     int col;
     String what;
+    YetiParser.Node cause;
 
     static String format(YType param1, YType param2,
                          String s, TypeException ex, Scope scope) {
@@ -51,12 +52,12 @@ public class CompileException extends RuntimeException {
                     result.append(ex.getMessage(scope));
                     msg = true;
                     break;
-                case '1': result.append(param1.toString(scope)); break;
-                case '2': result.append(param2.toString(scope)); break;
+                case '1': result.append(param1.toString(scope, ex)); break;
+                case '2': result.append(param2.toString(scope, ex)); break;
                 case '~':
-                    result.append(param1.toString(scope));
+                    result.append(param1.toString(scope, ex));
                     result.append(" is not ");
-                    result.append(param2.toString(scope));
+                    result.append(param2.toString(scope, ex));
                     break;
                 default:
                     result.append('#');
@@ -78,12 +79,12 @@ public class CompileException extends RuntimeException {
         this.what = what;
     }
 
-    public CompileException(YetiParser.Node pos,
-                            JavaClassNotFoundException ex) {
+    CompileException(YetiParser.Node pos,
+                     JavaClassNotFoundException ex) {
         this(ex, pos, "Unknown class: " + ex.getMessage());
     }
 
-    public CompileException(YetiParser.Node pos, String what) {
+    CompileException(YetiParser.Node pos, String what) {
         this(null, pos, what);
     }
 
@@ -94,9 +95,10 @@ public class CompileException extends RuntimeException {
             col = pos.col;
         }
         this.what = what;
+        this.cause = pos;
     }
 
-    public CompileException(YetiParser.Node pos, Scope scope,
+    CompileException(YetiParser.Node pos, Scope scope,
                             YType param1, YType param2, String what,
                             TypeException ex) {
         this(ex, pos, format(param1, param2, what, ex, scope));

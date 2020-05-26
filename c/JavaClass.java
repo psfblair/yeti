@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2008 Madis Janson
+ * Copyright (c) 2008-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,9 +45,12 @@ final class JavaClass extends CapturingClosure implements Runnable {
     private Field serialVersion;
     private JavaExpr superInit;
     private final boolean isPublic;
+    private boolean hasStatic;
     private int captureCount;
     private Map accessors;
     private Ctx classCtx;
+    private Capture merged;
+    private final int cline; // for duplicate class error
     YType classType;
     final Meth constr = new Meth();
     final Binder self;
@@ -130,17 +133,20 @@ final class JavaClass extends CapturingClosure implements Runnable {
 
         void convertArgs(Ctx ctx) {
             int n = (access & ACC_STATIC) == 0 ? 1 : 0;
-            ctx.localVarCount = args.size() + n;
+            int at = n;
             for (int i = 0; i < arguments.length; ++i) {
+                ++at;
                 if (arguments[i].type != YetiType.JAVA)
                     continue;
                 String descr = arguments[i].javaType.description;
                 if (descr != "Ljava/lang/String;" && descr.charAt(0) == 'L')
                     continue;
-                loadArg(ctx, arguments[i], i + n);
+                --at;
+                at += loadArg(ctx, arguments[i], at);
                 JavaExpr.convertValue(ctx, arguments[i]);
                 ctx.varInsn(ASTORE, i + n);
             }
+            ctx.localVarCount = at;
         }
 
         void gen(Ctx ctx) {
@@ -203,7 +209,7 @@ final class JavaClass extends CapturingClosure implements Runnable {
             return classType.javaType.description;
         }
 
-        public void gen2(Ctx ctx, Code value, int _) {
+        public void gen2(Ctx ctx, Code value, int __) {
             genPreGet(ctx);
             genSet(ctx, value);
             ctx.insn(ACONST_NULL);
@@ -267,7 +273,7 @@ final class JavaClass extends CapturingClosure implements Runnable {
         }
     }
 
-    JavaClass(String className, boolean isPublic) {
+    JavaClass(String className, boolean isPublic, int line) {
         type = YetiType.UNIT_TYPE;
         this.className = className;
         classType = new YType(YetiType.JAVA, YetiType.NO_PARAM);
@@ -278,9 +284,10 @@ final class JavaClass extends CapturingClosure implements Runnable {
         constr.className = className;
         constr.access = isPublic ? ACC_PUBLIC : 0;
         this.isPublic = isPublic;
+        cline = line;
     }
 
-    static void loadArg(Ctx ctx, YType argType, int n) {
+    private static int loadArg(Ctx ctx, YType argType, int n) {
         int ins = ALOAD;
         if (argType.type == YetiType.JAVA) {
             switch (argType.javaType.description.charAt(0)) {
@@ -292,6 +299,7 @@ final class JavaClass extends CapturingClosure implements Runnable {
             }
         }
         ctx.varInsn(ins, n);
+        return ins == DLOAD ? 2 : 1;
     }
 
     static void genRet(Ctx ctx, YType returnType) {
@@ -328,6 +336,8 @@ final class JavaClass extends CapturingClosure implements Runnable {
         m.access = mod == "static-method" ? ACC_PUBLIC + ACC_STATIC
                  : mod == "abstract-method" ? ACC_PUBLIC + ACC_ABSTRACT
                  : ACC_PUBLIC;
+        if ((m.access & ACC_STATIC) != 0)
+            hasStatic = true;
         m.line = line;
         methods.add(m);
         return m;
@@ -393,6 +403,11 @@ final class JavaClass extends CapturingClosure implements Runnable {
         c.localVar = n + constr.args.size() + 1;
     }
 
+    void onMerge(Capture removed) {
+        removed.next = merged;
+        merged = removed;
+    }
+
     String getAccessor(JavaType.Method method, String descr,
                        boolean invokeSuper) {
         if (accessors == null)
@@ -424,11 +439,13 @@ final class JavaClass extends CapturingClosure implements Runnable {
 
     void gen(Ctx ctx) {
         int i, cnt;
+        Capture c;
+
         constr.captures = captures;
         ctx.insn(ACONST_NULL);
         Ctx clc = ctx.newClass(classType.javaType.access | ACC_SUPER,
                         className, parentClass.type.javaType.className(),
-                        implement);
+                        implement, cline);
         clc.fieldCounter = captureCount;
         // block using our method names ;)
         for (i = 0, cnt = methods.size(); i < cnt; ++i)
@@ -436,29 +453,32 @@ final class JavaClass extends CapturingClosure implements Runnable {
         if (!isPublic)
             clc.markInnerClass(ctx.constants.ctx, ACC_STATIC);
         Ctx init = clc.newMethod(constr.access, "<init>", constr.descr(null));
+        if (isPublic && !hasStatic)
+            init.methodInsn(INVOKESTATIC, ctx.className, "init", "()V");
         constr.convertArgs(init);
         genClosureInit(init);
         superInit.genCall(init.load(0), parentClass.getCaptures(),
                           INVOKESPECIAL);
         // extra arguments are used for smuggling in captured bindings
         int n = constr.arguments.length;
-        for (Capture c = captures; c != null; c = c.next) {
+        for (c = captures; c != null; c = c.next) {
             c.localVar = -1; // reset to using this
-            clc.cw.visitField(0, c.id, c.captureType(), null, null).visitEnd();
+            clc.cw.visitField(ACC_FINAL | ACC_PRIVATE, c.id, c.captureType(),
+                              null, null).visitEnd();
             init.load(0).load(++n)
                 .fieldInsn(PUTFIELD, className, c.id, c.captureType());
         }
+        for (c = merged; c != null; c = c.next)
+            c.localVar = -1; // reset all merged captures also
         for (i = 0, cnt = fields.size(); i < cnt; ++i)
             ((Code) fields.get(i)).gen(init);
         init.insn(RETURN);
         init.closeMethod();
         for (i = 0, cnt = methods.size(); i < cnt; ++i)
             ((Meth) methods.get(i)).gen(clc);
-        if (isPublic) {
+        if (isPublic && hasStatic) {
             Ctx clinit = clc.newMethod(ACC_STATIC, "<clinit>", "()V");
-            clinit.methodInsn(INVOKESTATIC, ctx.className,
-                              "eval", "()Ljava/lang/Object;");
-            clinit.insn(POP);
+            clinit.methodInsn(INVOKESTATIC, ctx.className, "init", "()V");
             clinit.insn(RETURN);
             clinit.closeMethod();
         }
@@ -489,8 +509,8 @@ final class JavaClass extends CapturingClosure implements Runnable {
                     start = 1;
                     mc.load(0);
                 }
-                for (int j = 0; j < m.arguments.length; ++j)
-                    loadArg(mc, m.arguments[j], j + start);
+                for (int j = 0; j < m.arguments.length; )
+                    j += loadArg(mc, m.arguments[j], j + start);
                 mc.methodInsn(insn, accessor[3] == null ? className :
                                     parentClass.type.javaType.className(),
                               m.name, m.descr(null));

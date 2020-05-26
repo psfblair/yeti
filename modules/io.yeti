@@ -1,7 +1,7 @@
 /*
  * Yeti io library.
  *
- * Copyright (c) 2008-2011 Madis Janson
+ * Copyright (c) 2008-2012 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,33 +26,126 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+/**
+ * Standard input/output functions.
+ *
+ * Exceptions:
+ *  java.io.IOException -
+ *      Can be thrown for IO errors by any function in this module.
+ */
 module yeti.lang.io;
 
 import java.io: File, FileInputStream, FileOutputStream,
                 Reader, InputStream, InputStreamReader, BufferedReader,
                 OutputStream, OutputStreamWriter, BufferedWriter;
+import java.net.HttpURLConnection;
 import java.lang.Thread;
 
 var stdin' = None ();
 
 typedef input_handle = {
-    /// Read a line from the stream.
+    /**
+     * Reads at most maxLength characters from the stream.
+     *
+     * Arguments:
+     * maxLength - maximum number of characters to be read
+     *
+     * Description:
+     * Blocks until some input is available, then reads at most maxLength
+     * characters as long as it won't cause blocking again. Returns the
+     * read characters as a string. If applied at the end of stream,
+     * a undef_str is returned.
+     *
+     * Examples:
+     * Copy standard input to standard output:
+     * : (str = stdin.read 8192; print str; defined? str) loop;
+     * The `defined?` function is used to test for `undef_str` marking
+     * the end of stream.
+     */
     read is number -> string,
+
+    /**
+     * Reads a line from the stream. Returns the line, or `undef_str`
+     * if applied at the end of stream.
+     *
+     * Notes:
+     * A line is considered to be terminated by "\r", "\n" or
+     * "\r\n" character sequence.
+     */
     readln is () -> string,
-    /// Read a full contents of the stream.
+
+    /**
+     * Reads full contents of the stream as a single string.
+     */
     contents is () -> string,
+
+    /**
+     * Returns a lazy list representing lines from the stream.
+     *
+     * Description:
+     * The stream will be read as the returned list is consumed.
+     * If the `close` method is called, the whole list will be
+     * forced to be read.
+     *
+     * If the stream is forced to close with `rawClose` method
+     * and the returned list was not fully consumed, then consuming
+     * that list further results in IO exception.
+     *
+     * A line is considered to be terminated by "\r", "\n" or
+     * "\r\n" character sequence.
+     */
     lines is () -> list<string>,
+
+    /**
+     * Closes the input stream.
+     */
     close is () -> (),
+
+    /**
+     * Closes the input stream without forcing pending reads.
+     */
     rawClose is () -> ()
 }
 
 typedef output_handle = {
+    /**
+     * Closes the output stream (flushing any buffers first).
+     */
     close is () -> (),
+
+    /**
+     * Flushes any buffers to the output stream.
+     */
     flush is () -> (),
+
+    /**
+     * Writes the given string to the output stream.
+     *
+     * Arguments:
+     * string - a string to write
+     */
     write is string -> (),
+
+    /**
+     * Writes the string and system line separator to the output stream.
+     *
+     * Arguments:
+     * string - a string to write
+     *
+     * Notes:
+     * The line separator is defined by the system `line.separator` property.
+     */
     writeln is string -> ()
 }
 
+/**
+ * Group: read_
+ * Create a text input handle object wrapping a Java BufferedReader instance.
+ *
+ * Arguments:
+ * reader - a java.io.BufferedReader instance to be used
+ */
 readerHandle reader is ~BufferedReader -> 'a =
    (var l = []; // used for forcing on close
     var used = false;
@@ -123,6 +216,17 @@ stdin () =
         rh);
     esac;
 
+/**
+ * Group: zmisc (Miscellaneous functions)
+ * Applies block to the given handle, after that applies handle.close field
+ * to () value, even when exception was thrown by the block (the exception
+ * will be passed to caller of withHandle in that case). Returns the value
+ * returned by the block.
+ *
+ * Arguments:
+ * handle - object with close field
+ * block  - a function to be applied to the given handle
+ */
 withHandle h block =
    (try
         block h
@@ -130,7 +234,17 @@ withHandle h block =
         h.close ()
     yrt);
 
-// to keep close as only provided
+/**
+ * Group: read_
+ * Create a text input handle object from a Java InputStream instance.
+ * The bytes read from the stream will be converted to text according
+ * to the specified encoding. If encoding is empty string, system default
+ * charset is used.
+ *
+ * Arguments:
+ * stream   - a java.io.InputStream instance to be used
+ * encoding - name of the charset used in the given stream
+ */
 inputHandle stream encoding is ~InputStream -> string -> 'a =
    (var nok = true;
     try
@@ -148,16 +262,34 @@ inputHandle stream encoding is ~InputStream -> string -> 'a =
         fi
     yrt);
 
+/**
+ * Group: write_ (Writing text)
+ * Create a text output handle object wrapping a Java BufferedWriter instance.
+ *
+ * Arguments:
+ * writer - a java.io.WriterReader instance to be used
+ */
 writerHandle writer is ~BufferedWriter -> 'a = {
         write s is string -> () =
-            writer#write(s),
+            writer#write(s unsafely_as ~String),
         writeln s is string -> () =
-            writer#write(s);
+            writer#write(s unsafely_as ~String);
             writer#newLine(),
         flush () = writer#flush(),
         close () = writer#close(),
     };
 
+/**
+ * Group: write_
+ * Create a text output handle object from a Java OutputStream instance.
+ * The text written to the file will be encoded to bytes according
+ * to the specified encoding. If encoding is empty string, system default
+ * charset is used.
+ *
+ * Arguments:
+ * stream   - a java.io.InputStream instance to be used
+ * encoding - name of the charset used in the given stream
+ */
 outputHandle stream encoding is ~OutputStream -> string -> 'a =
    (var nok = true;
     try
@@ -175,46 +307,202 @@ outputHandle stream encoding is ~OutputStream -> string -> 'a =
         fi
     yrt);
 
+/**
+ * Group: read_
+ * Open text file and create an input handle object for it.
+ * The bytes read from the file will be converted to text according
+ * to the specified encoding.
+ *
+ * Arguments:
+ * file     - path to the file to be opened
+ * encoding - name of the charset used in the given stream
+ *            (empty string means system default charset)
+ */
 openInFile name is string -> string -> 'a =
     inputHandle new FileInputStream(name);
 
+/**
+ * Group: write_
+ * Open text file and create an output handle object for it.
+ * The text written to the file will be encoded to bytes according
+ * to the specified encoding.
+ *
+ * Arguments:
+ * file     - path to the file to be opened
+ * encoding - name of the charset to use for the given stream
+ *            (empty string means system default charset)
+ */
 openOutFile name is string -> string -> 'a =
     outputHandle new FileOutputStream(name);
 
 typedef bin_input_handle = {
+    /**
+     * Reads some bytes from the input stream and stores them into the
+     * buffer (after the start offset). Returns the number of bytes actually
+     * read, or -1 if applied at the end of stream.
+     *
+     * Arguments:
+     * buffer - a byte array
+     * offset - starting offset in the buffer for storing data
+     *
+     * Notes:
+     * The `binReadAll` function can be used to ensure reading a given
+     * number of bytes (or all bytes until the end of stream).
+     */
     .read is ~byte[] -> number -> number,
+
+    /**
+     * Closes the input stream.
+     */
     .close is () -> ()
 }
 
+/**
+ * Group: bin (Binary IO)
+ * Creates binary handle object for the given input stream.
+ *
+ * Arguments:
+ * input - java.io.InputStream instance to be used
+ */
 binInputHandle istream is ~InputStream -> 'a = {
         read buf from is ~byte[] -> number -> number =
             istream#read(buf, from, length buf - from),
         close () = istream#close()
     };
 
+/**
+ * Group: bin
+ * Creates binary handle object for the given output stream.
+ *
+ * Arguments:
+ * output - java.io.OutputStream instance to be used
+ */
 binOutputHandle ostream is ~OutputStream -> 'a = {
-        write buf len is ~byte[] -> number -> () =
-            ostream#write(buf, 0, len),
+        /**
+         * Writes bytes from the given list to the output stream.
+         * If numbers out of the range -128 to 255 are present in
+         * the list, then the result is undefined.
+         *
+         * Arguments:
+         * list - list of bytes to write to the output stream
+         */
+        write bytes is list?<number> -> () =
+            var i = bytes as ~AIter;
+            not nullptr? i loop
+                i := i#write(ostream),
+
+        /**
+         * Closes the output stream (calls `output#close()`).
+         */
         close () = ostream#close(),
+
+        /**
+         * Flushes the output stream (calls `output#flush()`).
+         */
         flush () = ostream#flush()
     };
 
 {
     withHandle,
 
+    /**
+     * Group: read_ (Reading text)
+     * Reads a single line from the stdin and returns as a string.
+     * The undef_str value is returned at the end of stream.
+     *
+     * Notes:
+     * It causes the stdin to create a java.io.BufferedReader wrapping
+     * the System.in, which means that readln may cause more data to be read
+     * from System.in to the stdin buffer, than the returned line.
+     */
     readln () = (stdin ()).readln (),
 
+    /**
+     * Group: write_
+     * Prints string representation of the given value to standard output
+     * and flushes the output buffers.
+     *
+     * Arguments:
+     * value - a value to print
+     *
+     * Description:
+     * The given value is formatted the same way as the `string` function
+     * would do. The resulting string is sent to the standard output stream
+     * and buffers are flushed.
+     *
+     * Using `(print value)` should always be equivalent to
+     * `(print (string value))`, the exact formatting rules
+     * are described in the `string` function documentation.
+     */
     print v =
         System#out#print(v);
         System#out#flush(),
 
+    /**
+     * Group: write_
+     * Prints string representation of the given value and system line separator
+     * to the standard output, and flushes the error printer buffers.
+     *
+     * Arguments:
+     * value - a value to print
+     *
+     * Description:
+     * The given value is formatted the same way as the `string` function
+     * would do. The resulting string and system line separator (usually '\n')
+     * are sent to the standard output stream and buffers are flushed.
+     *
+     * Using `(println value)` should always be equivalent to
+     * `(println (string value))`, the exact formatting rules
+     * are described in the `string` function documentation.
+     */
     println v =
         System#out#println(v),
 
+    /**
+     * Group: write_
+     * Prints string representation of the given value and system line separator
+     * to the standard error output, and flushes the error printer buffers.
+     *
+     * Arguments:
+     * value - a value to print
+     *
+     * Description:
+     * The given value is formatted the same way as the `string` function
+     * would do. The resulting string and system line separator (usually '\n')
+     * are sent to the standard error stream and buffers are flushed.
+     *
+     * Using `(eprintln value)` should be always equivalent to
+     * `(eprintln (string value))`, the exact formatting rules
+     * are described in the `string` function documentation.
+     */
     eprintln v =
         System#err#println(v),
 
+    /**
+     * Group: zmisc
+     * Terminates the Java virtual machine process with given exit status
+     * (by calling `System#exit(status)`).
+     * 
+     * Arguments:
+     * status - exit status code to be returned from the JVM process
+     */
     sysExit exitCode =
+        System#exit(exitCode);
+        throw (() as ~Exception),
+
+    /**
+     * Group: zmisc
+     * Terminates the current thread. If it is a main thread, the whole
+     * Java virtual machine will quit with the given exit status.
+     *
+     * Arguments:
+     * status - exit status code to be used when main thread is terminated
+     *
+     * Notes:
+     * The implementation works by throwing yeti.lang.ExitError, which is
+     * catched by the Yeti compiler generated main function.
+     */
+    threadExit exitCode =
         throw new ExitError(exitCode),
 
     readerHandle,
@@ -226,83 +514,367 @@ binOutputHandle ostream is ~OutputStream -> 'a = {
     binInputHandle,
     binOutputHandle,
 
+    /**
+     * Group: read_
+     * Standard input handle.
+     *
+     * Description:
+     * This module field (`stdin`) is implemented as read-only property.
+     * When accessed first time, a java.io.BufferedReader instance wrapping
+     * `System.in` is created internally. This means, that reading `stdin` can
+     * cause data read from `System.in` to be in the stdin specific reader
+     * buffer.
+     *
+     * Examples:
+     * Read from standard input and print all non-empty lines.
+     * : for (filter (!= '') (stdin.lines ())) println;
+     * This uses `stdin.lines` and `filter` working lazily, so whole `stdin`
+     * stream contents never needs to be hold in memory at once.
+     */
     get stdin () = stdin (),
 
-    linesOfReader reader is ~BufferedReader -> list<string> =
-        ReaderList#lines(reader) unsafely_as list<string>,
-
+    /**
+     * Group: read_
+     * Applies the given block to text input handle opened for specified
+     * file. The input handle will be automatically closed afterwards
+     * (even when exception was thrown by the block).
+     * Returns the value returned by the block.
+     *
+     * Arguments:
+     * file     - path to the file to be read
+     * encoding - name of the charset used in the given stream
+     *            (empty string means system default charset)
+     * block    - a function to be applied to the opened input object
+     */
     readFile name encoding =
         withHandle (openInFile name encoding),
 
+    /**
+     * Group: write_
+     * Applies the given block to text output handle opened for specified
+     * file. The output handle will be automatically closed afterwards
+     * (even when exception was thrown by the block).
+     * Returns the value returned by the block.
+     *
+     * Arguments:
+     * file     - path to the file to be written
+     * encoding - name of the charset to use for the given stream
+     *            (empty string means system default charset)
+     * block    - a function to be applied to the opened output object
+     */
     writeFile name encoding =
         withHandle (openOutFile name encoding),
 
+    /**
+     * Group: read_
+     * Applies the given handle.lines field to () and returns the result.
+     *
+     * Arguments:
+     * handle - a handle object having a lines function field
+     *
+     * Examples:
+     * Can be used together with IO functions expecting a block.
+     * : lines = readFile 'example.txt' '' getLines;
+     * Reads all lines into a string list from a file named 'example.txt'.
+     */
     getLines h = h.lines (),
+
+    /**
+     * Group: write_
+     * Applies the given handle.writeln field to each element in the
+     * lines list.
+     *
+     * Arguments:
+     * handle - a handle object having a `writeln` function field
+     * lines  - list of strings to written as separate lines
+     *
+     * Description:
+     * The canonical implementation is following:
+     * : putLines handle lines =
+     * :     for lines handle.writeln;
+     *
+     * Examples:
+     * : lines = ['orange', 'apple', 'mouse'];
+     * : writeFile 'test.txt' '' (`putLines` lines);
+     * Writes the `lines` list to the `test.txt` file as separate lines.
+     */
     putLines h lines = for lines h.writeln,
 
+    /**
+     * Group: read_
+     * Applies the given handle.contents field to () and returns the result.
+     *
+     * Arguments:
+     * handle - a handle object having a `contents` function field
+     *
+     * Examples:
+     * Can be used together with IO functions expecting a block.
+     * : str = readFile 'example.txt' '' getContents;
+     * Reads whole contents from a file named 'example.txt' into the str
+     * string.
+     */
     getContents h = h.contents (),
 
+    /**
+     * Group: bin
+     * Applies the given block to binary input handle opened for
+     * specified file. The input handle will be automatically closed
+     * afterwards (even when exception was thrown by the block).
+     * Returns the value returned by the block.
+     *
+     * Arguments:
+     * file  - path to the file to be read
+     * block - a function to be applied to the opened input object
+     */
     binReadFile name =
         withHandle (binInputHandle new FileInputStream(name is string)),
 
-    binWriteFile name writer
-            is string -> ((~byte[] -> number -> ()) -> 'a) -> 'a =
+    /**
+     * Group: bin
+     * Applies the given block to function writing to the file
+     * and returns the value returned by the block.
+     *
+     * Arguments:
+     * file     - path to the file to be written
+     * block    - a function to be applied to the write function
+     *
+     * Description:
+     * Creates the specified file and applies the given block to function
+     * writing to the file. The file will be automatically closed afterwards
+     * (even when exception was thrown by the block). If the file existed
+     * before, it will be truncated to zero length before appling the block.
+     *
+     * The write function is same as `.write` field in the handle object
+     * returned by the `binOutputHandle` function, taking as argument
+     * a byte list to be written. It may be called as many times as needed,
+     * with each call writing additional bytes to the given file.
+     *
+     * Examples:
+     * Write 4 bytes representing ASCII string 'TEST' to file 'testfile':
+     * : binWriteFile 'testfile' do f:
+     * :     f [84, 69, 83, 84]
+     * : done
+     */
+    binWriteFile name writer is string -> ((list?<number> -> ()) -> 'a) -> 'a =
         withHandle (binOutputHandle new FileOutputStream(name is string))
                    (writer . (.write)),
 
-    // Example
-    // data = binReadFile "test" (binReadAll 0);
-    // binWriteFile "test2" data;
+    /**
+     * Group: bin
+     * Reads up to limit bytes from input handle and returns a list of
+     * the read bytes.
+     *
+     * Arguments:
+     *  limit - Maximum number of bytes to read (<= 0 means unlimited).
+     *  handle - Binary input stream handle.
+     *
+     * Examples:
+     * A contents of file could be copied in the following way:
+     * : data = binReadFile "test" (binReadAll 0);
+     * : binWriteFile "test2" (data |>);
+     */
     binReadAll limit handle
-            is number -> bin_input_handle -> ((~byte[] -> number -> 'a) -> 'a) =
-        BinBuf#readAll(limit, handle.read, handle.close) unsafely_as 'b,
+            is number -> bin_input_handle -> list<number> =
+        Core#readAll(limit, handle.read, handle.close) unsafely_as list<number>,
 
-    // Example: getContents (openTextUrl [] 'http://example.com/')
-    openTextUrl options url
-            is list<CharSet (string -> string)> -> string -> 'a =
-        conn = new java.net.URL(url)#openConnection();
-        stream = conn#getInputStream();
-        cs = try
-                contentType = conn#getContentType();
-                cs = strTrim (strRightOf 'CHARSET=' (strUpper contentType));
-                case options of
-                CharSet f :: _: f cs;
-                _: cs
+    /**
+     * Group: zmisc
+     * Fetches given url, mostly useful for making HTTP GET or POST requests.
+     *
+     * Arguments:
+     * options - option list
+     * result  - block to read the response body
+     * url     - URL to fetch
+     *
+     * Examples:
+     * Fetch URL as string and print it:
+     * : str = fetchURL [] (Handle getContents) 'http://example.com/';
+     * : println str;
+     *
+     * Fetch as binary data and write to file:
+     * : data = fetchURL [] (Binary (binReadAll 0)) 'http://example.com/';
+     * : binWriteFile 'example.html' (data |>);
+     */
+    fetchURL options result url =
+        var csf = id;
+        nohf = const \();
+        var hf = nohf;
+        var sf = nohf;
+        var body = '';
+        var ocs = '';
+        conn = new java.net.URL(url is string
+                    unsafely_as ~String)#openConnection();
+        http = if conn instanceof HttpURLConnection then
+                    conn unsafely_as ~HttpURLConnection
+               fi;
+        try
+            for options \case of
+                /// Callback to determine response body charset.
+                /// Argument is charset from the Content-Type response header.
+                CharSet f: csf := f;
+                /// Set request header.
+                SetHeader {name, value}:
+                    if strUpper name == 'CONTENT-TYPE' then
+                        ocs := strTrim (strRightOf 'CHARSET=' (strUpper value))
+                    fi;
+                    conn#setRequestProperty(name, value);
+                /// Set timeout in seconds.
+                Timeout t: conn#setReadTimeout(t * 1000);
+                /// Callback to be called on each response header
+                /// (with header name and value as arguments).
+                Header f: hf := f;
+                /// Set using caches.
+                UseCaches use: conn#setUseCaches(use);
+                /// Callback to be called for the status code and message.
+                Status f: sf := f;
+                /// Send post request with the given body.
+                Post body':
+                    body := body';
+                    conn#setDoOutput(true);
+                esac;
+            if conn#getDoOutput() then
+                bytes = (body as ~String)#getBytes(if ocs == '' then 'UTF-8'
+                                                                else: ocs);
+                conn#setRequestProperty('Content-Length', "\(length bytes)");
+                os = conn#getOutputStream();
+                try
+                    os#write(bytes)
+                finally
+                    os#close()
+                yrt;
+            fi;
+            stream = conn#getInputStream();
+            try
+                if not same? sf nohf and not nullptr? http then
+                    sf http#getResponseCode() http#getResponseMessage()
+                fi;
+                if not same? hf nohf then
+                    var nth = 1;
+                    (name = conn#getHeaderFieldKey(nth);
+                     defined? name and
+                       (hf name conn#getHeaderField(nth);
+                        nth := nth + 1; true)) loop
+                fi;
+                case result of
+                /// Apply given function to input_handle
+                /// reading from the response body.
+                Handle f:
+                    cs = strUpper conn#getContentType() |>
+                         strRightOf 'CHARSET=' |> strTrim |> csf;
+                    withHandle (inputHandle stream
+                                 if cs != '' then cs else: 'ISO-8859-1') f;
+                /// Apply given function to InputStream
+                /// reading from the response body.
+                Stream f: f stream;
+                /// Apply given function to bin_input_handle
+                /// reading from the response body.
+                Binary f: f (binInputHandle stream);
                 esac
-             catch java.lang.Throwable t:
-                stream#close();
-                throw t
-             yrt;
-        inputHandle stream if cs != '' then cs else 'ISO-8859-1' fi,
+            finally
+                stream#close()
+            yrt
+        finally
+            if not nullptr? http then
+                http#disconnect()
+            fi
+        yrt,
 
+    /**
+     * Group: write_
+     * Prints trace message (formatted like the `string` function would do it)
+     * to standard error stream and returns the given result value. Useful for
+     * inserting debug printing into expressions.
+     *
+     * Arguments:
+     * message - a value to print
+     * result  - a value to return
+     */
     trace msg a = (System#err#println(msg); a),
 
-    runThread options f is list?<'a> -> (() -> ()) -> ~Thread =
-        class FunThread extends Thread
+    /**
+     * Group: zmisc
+     * Create java.lang.Runnable instance that applies the given function
+     * to (), when its run method is invoked.
+     *
+     * Arguments:
+     * function - function to apply, when run method is invoked
+     */
+    runnable f is (() -> ()) -> ~java.lang.Runnable =
+        class Run extends java.lang.Runnable
             void run()
                 f ()
         end;
-        th = new FunThread();
-        for options do i:
-            case i of
-                Daemon (): th#setDaemon(true);
-                ClassLoader cl: th#setContextClassLoader(cl);
-            esac
-        done;
+        new Run(),
+
+    /**
+     * Group: zmisc
+     * Starts a new thread, which will start execution by invoking
+     * the given block. Returns java.lang.Thread object corresponding
+     * to the created thread.
+     *
+     * Arguments:
+     * options - options for the new thread
+     * block   - a function invoked by the new thread
+     */
+    runThread options f is list?<'a> -> (() -> ()) -> ~Thread =
+        th = new Thread(runnable f);
+        for options
+           \case of
+            /// Mark the thread a daemon thread. The JVM exits when last
+            /// non-daemon thread has stopped.
+            Daemon (): th#setDaemon(true);
+            /// Set the threads context class loader.
+            ClassLoader cl: th#setContextClassLoader(cl);
+            esac;
         th#start();
         th,
 
+    /**
+     * Group: zmisc
+     * Puts the current thread to sleep for given number of seconds.
+     *
+     * Arguments:
+     * seconds - how long to sleep (with 1/1000 second precision)
+     */
     sleep time = Thread#sleep(time * 1000),
 
-    deleteFile fn is string -> boolean = new File(fn)#delete(),
+    /**
+     * Group: file (Filesystem operations)
+     * Deletes a file or empty directory with the specified path name.
+     * Returns true if deleting succeeded, and false if the path didn't exist,
+     * was a non-empty directory, or couldn't be deleted for some other reason.
+     *
+     * Arguments:
+     * path - directory or file name
+     */
+    deleteFile fn is string -> boolean =
+        new File(fn unsafely_as ~String)#delete(),
 
-    /// Lists files in given directory.
-    /// Includes hidden files only when hidden argument is true.
+    /**
+     * Group: file
+     * Creates the specified directory path, if it doesn't already exist.
+     * Missing parent directories are created as needed.
+     *
+     * Arguments:
+     * path - path of the directory to create
+     */
+    createPath path is string -> () = _ =
+        new File(path unsafely_as ~String)#mkdirs(),
+
+    /**
+     * Group: file
+     * Lists files in given directory.
+     *
+     * Arguments:
+     *   hidden    - Include hidden file/directory entries
+     *   directory - Path to the directory to list
+     */
     listDirectory hidden directory is boolean -> string
             -> list<{name is string, path is string,
                      file? is boolean, directory? is boolean}> =
        (res = array [];
-        for new File(directory)#listFiles() do f:
+        for (new File(directory unsafely_as ~String)#listFiles()
+                as list<'a>) do f:
             if hidden or not f#isHidden() then
                 var path = f#getPath();
                 if File#separator == '\' then
@@ -310,11 +882,26 @@ binOutputHandle ostream is ~OutputStream -> 'a = {
                 fi;
                 file? = f#isFile();
                 push res {
-                    path, file?,
+                    /// Path to the file or directory.
+                    path = path,
+                    /// Whether this entry denotes a normal file.
+                    file? = file?,
+                    /// Name without any preceding path.
                     name = f#getName(),
+                    /// Whether this entry denotes a directory.
                     directory? = not file? and f#isDirectory()
                 }
             fi
         done;
         list res),
+
+    /**
+     * Group: zmisc
+     * Program command line arguments. It is thread-local.
+     */
+    get _argv () =
+        Core#ARGV#get() unsafely_as array<string>,
+
+    set _argv a =
+        Core#ARGV#set(a unsafely_as ~Object),
 }

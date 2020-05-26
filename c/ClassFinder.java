@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java class type reader.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,10 +41,10 @@ import java.util.HashMap;
 import java.util.Enumeration;
 import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
-import yeti.renamed.asm3.ClassReader;
+import yeti.renamed.asmx.ClassReader;
 
 abstract class ClassPathItem {
-    abstract InputStream getStream(String name) throws IOException;
+    abstract InputStream getStream(String name, long[] time) throws IOException;
     abstract boolean exists(String name);
 }
 
@@ -52,15 +52,19 @@ class ClassDir extends ClassPathItem {
     String path;
 
     ClassDir(String path) {
-        this.path = path.length() > 0 ? path.concat(File.separator) : "";
+        this.path = path;
     }
 
-    InputStream getStream(String name) throws IOException {
-        return new FileInputStream(path.concat(name));
+    InputStream getStream(String name, long[] time) throws IOException {
+        File f = new File(path, name);
+        InputStream r = new FileInputStream(f);
+        if (time != null)
+            time[0] = f.lastModified();
+        return r;
     }
 
     boolean exists(String name) {
-        return new File(path.concat(name)).isFile();
+        return new File(path, name).isFile();
     }
 }
 
@@ -83,9 +87,14 @@ class ClassJar extends ClassPathItem {
         }
     }
 
-    InputStream getStream(String name) throws IOException {
+    InputStream getStream(String name, long[] time) throws IOException {
         ZipEntry entry = (ZipEntry) entries.get(name);
-        return entry == null ? null : jar.getInputStream(entry);
+        if (entry == null)
+            return null;
+        InputStream r = jar.getInputStream(entry);
+        if (time != null && (time[0] = entry.getTime()) < 0)
+            time[0] = 0; // unknown, should probably rebuild
+        return r;
     }
 
     boolean exists(String name) {
@@ -94,17 +103,18 @@ class ClassJar extends ClassPathItem {
 }
 
 class ClassFinder {
-    private ClassPathItem[] classPath;
+    private final ClassPathItem[] classPath;
+    private final ClassPathItem destDir;
     private Map defined = new HashMap();
     final Map parsed = new HashMap();
     final Map existsCache = new HashMap();
     final String pathStr;
 
     ClassFinder(String cp) {
-        this(cp.split(File.pathSeparator));
+        this(cp.split(File.pathSeparator), null);
     }
 
-    ClassFinder(String[] cp) {
+    ClassFinder(String[] cp, String depDestDir) {
         classPath = new ClassPathItem[cp.length];
         StringBuffer buf = new StringBuffer();
         for (int i = 0; i < cp.length; ++i) {
@@ -115,17 +125,19 @@ class ClassFinder {
             buf.append(cp[i]);
         }
         pathStr = buf.toString();
+        destDir = depDestDir == null ? null : new ClassDir(depDestDir);
     }
 
-    public InputStream findClass(String name) {
+    public InputStream findClass(String name, long[] time) {
         Object x = defined.get(name);
-        if (x != null) {
+        if (x != null && time != null) {
+            time[0] = 0; // unknown, should probably rebuild
             return new ByteArrayInputStream((byte[]) x);
         }
         InputStream in;
         for (int i = 0; i < classPath.length; ++i) {
             try {
-                if ((in = classPath[i].getStream(name)) != null)
+                if ((in = classPath[i].getStream(name, time)) != null)
                     return in;
             } catch (IOException ex) {
             }
@@ -153,11 +165,14 @@ class ClassFinder {
                 found = true;
                 break;
             }
-        ClassLoader clc;
+        ClassLoader clc = null;
         InputStream in;
-        if (!found &&
-              (clc = Thread.currentThread().getContextClassLoader()) != null &&
-              (in = clc.getResourceAsStream(fn)) != null) {
+        if (!found) {
+            clc = Thread.currentThread().getContextClassLoader();
+            if (clc == null && name.startsWith("java"))
+                clc = ClassLoader.getSystemClassLoader();
+        }
+        if (clc != null && (in = clc.getResourceAsStream(fn)) != null) {
             found = true;
             try {
                 in.close();
@@ -176,7 +191,16 @@ class ClassFinder {
             JavaSource.loadClass(this, t, (JavaNode) classNode);
             return t;
         }
-        InputStream in = findClass(className + ".class");
+        String classFile = className.concat(".class");
+        InputStream in = findClass(classFile, null);
+        if (in == null)
+            try {
+                if (destDir == null)
+                    return null;
+                in = destDir.getStream(classFile, null);
+            } catch (IOException ex) {
+                return null;
+            }
         if (in == null)
             return null;
         try {
@@ -184,11 +208,10 @@ class ClassFinder {
                     ClassReader.SKIP_CODE | ClassReader.SKIP_FRAMES);
         } catch (IOException ex) {
             return null;
+        } catch (Exception ex) {
+            throw new RuntimeException("Internal error reading class " +
+                        className + ": " + ex.getMessage(), ex);
         }
         return t;
-    }
-
-    static ClassFinder get() {
-        return CompileCtx.current().classPath;
     }
 }

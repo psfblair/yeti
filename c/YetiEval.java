@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler eval helper.
  *
- * Copyright (c) 2008 Madis Janson
+ * Copyright (c) 2008-2011 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -55,7 +55,7 @@ public class YetiEval {
         return (YetiEval) instance.get();
     }
 
-    public static YetiEval set(YetiEval eval) {
+    static YetiEval set(YetiEval eval) {
         YetiEval old = (YetiEval) instance.get();
         instance.set(eval);
         return old;

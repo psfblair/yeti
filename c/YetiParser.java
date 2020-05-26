@@ -3,7 +3,7 @@
 /**
  * Yeti language parser.
  *
- * Copyright (c) 2007,2008,2009 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -95,6 +95,7 @@ interface YetiParser {
 
     class XNode extends Node {
         Node[] expr;
+        String doc;
 
         XNode(String kind) {
             this.kind = kind;
@@ -119,7 +120,8 @@ interface YetiParser {
             buf.append(kind);
             for (int i = 0; i < expr.length; ++i) {
                 buf.append(' ');
-                buf.append(expr[i].str());
+                if (expr[i] != null)
+                    buf.append(expr[i].str());
             }
             buf.append(')');
             return buf.toString();
@@ -173,22 +175,22 @@ interface YetiParser {
         }
 
         Bind(List args, Node expr, boolean inStruct, String doc) {
+            String s;
             this.doc = doc;
             int first = 0;
             Node nameNode = null;
             while (first < args.size()) {
                 nameNode = (Node) args.get(first);
                 ++first;
-                if (nameNode.kind == "var") {
+                if (nameNode.kind == "var")
                     var = true;
-                } else if (nameNode.kind == "norec") {
+                else if (nameNode.kind == "norec")
                     noRec = true;
-                } else {
+                else
                     break;
-                }
             }
             if (!var && nameNode instanceof Sym) {
-                String s = ((Sym) nameNode).sym;
+                s = ((Sym) nameNode).sym;
                 if (inStruct && args.size() > first) {
                     if (s == "get") {
                         property = true;
@@ -200,32 +202,31 @@ interface YetiParser {
                     }
                 }
             }
-            if (first == 0 || first > args.size()) {
+            if (first == 0 || first > args.size())
                 throw new CompileException(nameNode,
                         "Variable name is missing");
-            }
-            if (!(nameNode instanceof Sym)) {
-                throw new CompileException(nameNode,
-                        "Illegal binding name: " + nameNode
-                         + " (missing ; after expression?)");
-            }
+            if (inStruct && nameNode.kind == "``")
+                nameNode = ((XNode) nameNode).expr[0];
+            if (!(nameNode instanceof Sym))
+                throw new CompileException(nameNode, nameNode.kind == "class"
+                            ? "Missing ; after class definition"
+                            : "Illegal binding name: " + nameNode
+                              + " (missing ; after expression?)");
             line = nameNode.line;
             col = nameNode.col;
             this.name = ((Sym) nameNode).sym;
             if (first < args.size() && args.get(first) instanceof BinOp &&
-                    ((BinOp) args.get(first)).op == FIELD_OP) {
+                ((s = ((BinOp) args.get(first)).op) == FIELD_OP || s == "#"))
                 throw new CompileException((BinOp) args.get(first),
                     "Bad argument on binding (use := for assignment, not =)");
-            }
             int i = args.size() - 1;
             if (i >= first && args.get(i) instanceof IsOp) {
                 type = ((IsOp) args.get(i)).type;
                 --i;
             }
-            for (; i >= first; --i) {
+            for (; i >= first; --i)
                 expr = XNode.lambda((Node) args.get(i), expr,
                         i == first ? nameNode : null);
-            }
             this.expr = expr;
         }
 
@@ -263,6 +264,8 @@ interface YetiParser {
 
         String str() {
             StringBuffer res = new StringBuffer("(`begin");
+            if (seqKind != null)
+                res.append(':').append(seqKind);
             for (int i = 0; st != null && i < st.length; ++i) {
                 res.append(' ').append(st[i].str());
             }
@@ -355,9 +358,14 @@ interface YetiParser {
     }
 
     final class TypeDef extends Node {
+        static final int SHARED  = 1;
+        static final int OPAQUE  = 2;
+        static final int UNSHARE = 3;
         String name;
         String[] param;
+        String doc;
         TypeNode type;
+        int kind;
 
         String str() {
             StringBuffer buf =
@@ -406,14 +414,12 @@ interface YetiParser {
         String str() {
             StringBuffer buf =
                 new StringBuffer(right == null ? "<>" : right.str());
-            buf.append('#');
-            buf.append(name);
+            buf.append('#').append(name);
             if (arguments != null) {
                 buf.append('(');
                 for (int i = 0; i < arguments.length; ++i) {
-                    if (i != 0) {
+                    if (i != 0)
                         buf.append(", ");
-                    }
                     buf.append(arguments[i].str());
                 }
                 buf.append(')');
@@ -436,6 +442,7 @@ interface YetiParser {
         String name;
         TypeNode[] param;
         boolean var;
+        boolean exact;
         String doc;
 
         TypeNode(String name, TypeNode[] param) {
@@ -448,19 +455,15 @@ interface YetiParser {
                 return "(" + param[0].str() + " -> " + param[1].str() + ")";
             StringBuffer buf = new StringBuffer();
             if (name == "|") {
-                for (int i = 0; i < param.length; ++i) {
-                    if (i != 0)
-                        buf.append(" | ");
-                    buf.append(param[i].str());
-                }
+                for (int i = 0; i < param.length; ++i)
+                    buf.append(" | ").append(param[i].str());
                 return buf.toString();
             }
             if (name == "") {
                 buf.append('{');
                 for (int i = 0; i < param.length; ++i) {
-                    if (i != 0) {
+                    if (i != 0)
                         buf.append("; ");
-                    }
                     buf.append(param[i].name);
                     buf.append(" is ");
                     buf.append(param[i].param[0].str());
@@ -470,9 +473,8 @@ interface YetiParser {
             }
             if (param == null || param.length == 0)
                 return name;
-            if (Character.isUpperCase(name.charAt(0))) {
+            if (Character.isUpperCase(name.charAt(0)))
                 return "(" + name + " " + param[0].str() + ")";
-            }
             buf.append(name);
             buf.append('<');
             for (int i = 0; i < param.length; ++i) {
@@ -499,23 +501,20 @@ interface YetiParser {
 
         private void addOp(BinOp op) {
             BinOp to = cur;
-            if (op.op == "-" && lastOp || op.op == "\\"
-                    || op.op == "throw" || op.op == "not") {
+            if (op.op == "-" && lastOp || op.op == "\\" || op.op == "not") {
                 if (!lastOp) {
                     apply(op);
                     to = cur;
                 }
-                if (op.op == "-") {
+                if (op.op == "-")
                     op.prio = 1;
-                }
                 to.left = to.right;
             } else if (lastOp) {
                 throw new CompileException(op, "Do not stack operators");
             } else {
                 while (to.parent != null && (to.postfix || to.prio < op.prio ||
-                            to.prio == op.prio && op.toRight)) {
+                            to.prio == op.prio && op.toRight))
                     to = to.parent;
-                }
                 op.right = to.right;
             }
             op.parent = to;
@@ -525,12 +524,12 @@ interface YetiParser {
         }
 
         void add(Node node) {
-            if (node instanceof BinOp && ((BinOp) node).parent == null) {
+            if (node instanceof BinOp && ((BinOp) node).parent == null &&
+                    (!lastOp || node.kind != "listop")) {
                 addOp((BinOp) node);
             } else {
-                if (!lastOp) {
+                if (!lastOp)
                     apply(node);
-                }
                 lastOp = false;
                 cur.left = cur.right;
                 cur.right = node;
@@ -541,7 +540,7 @@ interface YetiParser {
             if (cur.left == null && cur.prio != -1 && cur.prio != 1 &&
                     cur.prio != Parser.NOT_OP_LEVEL &&
                     !cur.postfix || cur.right == null)
-                throw new CompileException(cur, "Expecting some value");
+                throw new CompileException(cur, "Expecting some value"+cur);
             return root.right;
         }
     }
@@ -549,9 +548,11 @@ interface YetiParser {
     final class Parser {
         private static final char[] CHS =
             ("                                " + // 0x
+            // !"#$%&'()*+,-./0123456789:;<=>?
              " .'.x..x  .. ../xxxxxxxxxx. ...x" + // 2x
              ".xxxxxxxxxxxxxxxxxxxxxxxxxx[ ].x" + // 4x
              "`xxxxxxxxxxxxxxxxxxxxxxxxxx . . ").toCharArray();
+            //`abcdefghijklmnopqrstuvwxyz{|}~
 
         private static final String[][] OPS = {
             { "*", "/", "%" },
@@ -563,6 +564,7 @@ interface YetiParser {
             { null }, // and or
             { "^" },
             { "::", ":.", "++" },
+            { "|>" },
             { "is" },
             { ":=" },
             { null }, // loop
@@ -570,18 +572,21 @@ interface YetiParser {
         private static final int FIRST_OP_LEVEL = 3;
         private static final int COMP_OP_LEVEL = opLevel("<");
         static final int NOT_OP_LEVEL = COMP_OP_LEVEL + 1;
+        static final int LIST_OP_LEVEL = NOT_OP_LEVEL + 3;
         static final int IS_OP_LEVEL = opLevel("is");
         private static final Eof EOF = new Eof("EOF");
         private char[] src;
         private int p;
         private Node eofWas;
         private int flags;
-        private String sourceName;
         private int line = 1;
         private int lineStart;
         private String yetiDocStr;
         private boolean yetiDocReset;
+        XNode loads;
+        String sourceName;
         String moduleName;
+        int moduleNameLine;
         String topDoc;
         boolean isModule;
         boolean deprecated;
@@ -603,12 +608,30 @@ interface YetiParser {
             return line;
         }
 
-        private void addDoc(int from, int to) {
+        private int directive(int from, int to) {
+            boolean doc = src[from] != '%';;
+            if (doc && (flags & Compiler.GF_DOC) == 0)
+                return to;
             ++from;
             String str = new String(src, from, to - from);
-            yetiDocStr = yetiDocStr == null || yetiDocReset
-                            ? str : yetiDocStr + '\n' + str;
-            yetiDocReset = false;
+            if (doc) {
+                yetiDocStr = yetiDocStr == null || yetiDocReset
+                                ? str : yetiDocStr + '\n' + str;
+                yetiDocReset = false;
+            } else if (str.length() < 2) {
+            } else if (str.charAt(0) == ':') {
+                try {
+                    line = Integer.parseInt(str.substring(1)) - 1;
+                } catch (NumberFormatException ex) {
+                    throw new CompileException(line, from - lineStart,
+                                               "Bad line directive");
+                }
+            } else if (str.startsWith("FILE='")) {
+                p = from + 6;
+                sourceName = readAStr().str;
+                return p > to ? p : to;
+            }
+            return to;
         }
 
         private int skipSpace() {
@@ -617,7 +640,8 @@ interface YetiParser {
             char c;
             yetiDocReset = true;
             for (;;) {
-                while (i < src.length && (c = src[i]) >= '\000' && c <= ' ') {
+                while (i < src.length &&
+                       ((c = src[i]) >= '\000' && c <= ' ' || c == 0xa0)) {
                     ++i;
                     if (c == '\n') {
                         ++line;
@@ -629,8 +653,8 @@ interface YetiParser {
                         sp = i += 2;
                         while (i < src.length && src[i] != '\n'
                                 && src[i] != '\r') ++i;
-                        if (i > sp && src[sp] == '/')
-                            addDoc(sp, i);
+                        if (i > sp && (src[sp] == '/' || src[sp] == '%'))
+                            i = directive(sp, i);
                         continue;
                     }
                     if (src[i + 1] == '*') {
@@ -651,7 +675,7 @@ interface YetiParser {
                             }
                         }
                         if (i - 3 > sp && src[sp] == '*')
-                            addDoc(sp, i - 2);
+                            directive(sp, i - 2);
                         continue;
                     }
                 }
@@ -671,7 +695,7 @@ interface YetiParser {
             switch (src[i]) {
                 case '.':
                     if ((i <= 0 || (c = src[i - 1]) < '~' && CHS[c] == ' ' &&
-                                (i >= src.length ||
+                                (i + 1 >= src.length ||
                                  (c = src[i + 1]) < '~' && CHS[c] == ' ')))
                         return new BinOp(".", COMP_OP_LEVEL - 1, true)
                             .pos(line, col);
@@ -683,12 +707,7 @@ interface YetiParser {
                 case '(':
                     return readSeq(')', null);
                 case '[':
-                    if (i + 2 < src.length && src[i + 1] == ':' &&
-                            src[i + 2] == ']') {
-                        p = i + 3;
-                        return new XNode("list").pos(line,col);
-                    }
-                    return new XNode("list", readMany(",", ']')).pos(line, col);
+                    return readList().pos(line, col);
                 case '{':
                     return XNode.struct(readMany(",", '}')).pos(line, col);
                 case ')':
@@ -721,14 +740,14 @@ interface YetiParser {
                     return new BinOp(FIELD_OP, 0, true).pos(line, col);
                 if (s == "#")
                     return readObjectRef().pos(line, col);
-                for (i = OPS.length; --i >= 0;) {
-                    for (int j = OPS[i].length; --j >= 0;) {
-                        if (OPS[i][j] == s) {
-                            return new BinOp(s, i + FIRST_OP_LEVEL, s != "::")
+                for (i = OPS.length; --i >= 0;)
+                    for (int j = OPS[i].length; --j >= 0;)
+                        if (OPS[i][j] == s)
+                            return new BinOp(s, i + FIRST_OP_LEVEL,
+                                             i != LIST_OP_LEVEL - FIRST_OP_LEVEL)
                                          .pos(line, col);
-                        }
-                    }
-                }
+                if (s == "->")
+                    return new BinOp("->", 0, true).pos(line, col);
                 return new BinOp(s, FIRST_OP_LEVEL + 2, true).pos(line, col);
             }
             if ((c = src[i]) >= '0' && c <= '9') {
@@ -746,8 +765,6 @@ interface YetiParser {
                         "Bad number literal '" + s + "'");
                 }
             }
-            if (src[i] == '`' && i + 1 < src.length)
-                ++i;
             while (++i < src.length && ((c = src[i]) > '~' || CHS[c] == 'x'));
             String s = new String(src, p, i - p);
             p = i;
@@ -775,7 +792,7 @@ interface YetiParser {
             } else if (s == "b_or" || s == "xor") {
                 res = new BinOp(s, FIRST_OP_LEVEL + 1, true);
             } else if (s == "is" || s == "unsafely_as" || s == "as") {
-                TypeNode t = readType(true);
+                TypeNode t = readType(TYPE_NORMAL);
                 if (t == null) {
                     throw new CompileException(line, col,
                                 "Expecting type expression");
@@ -784,17 +801,16 @@ interface YetiParser {
                             .pos(line, col);
             } else if (s == "new") {
                 res = readNew();
-            } else if (s == "var" || s == "norec") {
+            } else if (s == "var" || s == "norec" || s == "fall") {
                 res = new XNode(s);
-            } else if (s == "throw") {
-                res = new BinOp("throw", 1, false);
             } else if (s == "loop") {
                 res = new BinOp(s, IS_OP_LEVEL + 2, false);
             } else if (s == "import") {
                 res = readImport();
             } else if (s == "load") {
-                res = new XNode(s,
-                    readDotted("Expected module name after 'load', not a "));
+                res = loads = new XNode(s, new Node[] {
+                    readDotted("Expected module name after 'load', not a "),
+                    loads });
             } else if (s == "classOf") {
                 res = new XNode(s,
                             readDottedType("Expected class name, not a "));
@@ -810,15 +826,41 @@ interface YetiParser {
             } else {
                 if (s.charAt(0) != '`') {
                     res = new Sym(s);
-                } else if (s.length() > 1 && p < src.length && src[p] == '`') {
+                } else if (p >= src.length || src[p] != '`') {
+                    throw new CompileException(line, col, "Syntax error");
+                } else if (s.length() == 1) {
+                    do {
+                        if (++p >= src.length || src[p] == '\n')
+                            throw new CompileException(line, col,
+                                        "Unterminated ``identifier");
+                    } while (src[p - 1] != '`' || src[p] != '`');
+                    s = new String(src, i + 1, p - i - 2).intern();
+                    res = new XNode("``", new Sym(s));
+                    ++p;
+                } else {
                     ++p;
                     res = new BinOp(s.substring(1).intern(),
                                     FIRST_OP_LEVEL + 2, true);
-                } else {
-                    throw new CompileException(line, col, "Syntax error");
                 }
             }
             return res.pos(line, col);
+        }
+
+        private Node readList() {
+            char c;
+            int i = p;
+            if (i + 1 < src.length && src[i] == ':' && src[i + 1] == ']') {
+                p = i + 2;
+                return new XNode("list");
+            }
+            Node[] elem = readMany(",", ']');
+            if (elem.length != 1 || i <= 1 ||
+                    (c = src[i - 2]) < '~' && CHS[c] == ' ' && c != ')' ||
+                    elem[0] instanceof BinOp && ((BinOp) elem[0]).op == "..")
+                return new XNode("list", elem);
+            Node res = new ObjectRefOp(null, elem);
+            res.kind = "listop";
+            return res;
         }
 
         private Node def(List args, List expr, boolean structDef, String doc) {
@@ -830,7 +872,7 @@ interface YetiParser {
                 if (o instanceof BinOp
                     && (partial = (BinOp) o).parent == null
                     && partial.op != "\\" && partial.op != "-"
-                    && partial.op != "throw" && partial.op != "not") {
+                    && partial.op != "not" && partial.op != "#") {
                     s = partial.op;
                     i = 1;
                 } else if ((o = expr.get(cnt - 1)) instanceof BinOp &&
@@ -850,10 +892,14 @@ interface YetiParser {
                 }
             }
             if (s != null && i >= cnt) {
-                if (s == "loop" || s == "with" || s == "throw" ||
-                        partial instanceof TypeOp)
+                if (s == "loop" || s == "with" || partial instanceof IsOp)
                     throw new CompileException(partial, "Special operator `" +
                                     s + "` cannot be used as a function");
+                if (partial instanceof TypeOp) {
+                    partial.right = new Sym(partial.hashCode() + partial.op);
+                    partial.right.pos(partial.line, partial.col);
+                    return XNode.lambda(partial.right, partial, null);
+                }
                 return new Sym(s).pos(partial.line, partial.col);
             }
             ParseExpr parseExpr = new ParseExpr();
@@ -1292,8 +1338,11 @@ interface YetiParser {
                 if (sym.kind == ":" && args == null) {
                     if (l.size() == 0)
                         throw new CompileException(sym, "Unexpected `:'");
-                    ((XNode) sym).expr =
-                        new Node[] { def(null, l, false, null) };
+                    XNode colon = (XNode) sym;
+                    colon.expr = new Node[] { def(null, l, false, null) };
+                    colon.doc = doc;
+                    doc = null;
+                    yetiDocStr = null;
                     l = new ArrayList();
                     res.add(sym);
                     continue;
@@ -1301,7 +1350,7 @@ interface YetiParser {
                 if (sym.kind == "=") {
                     args = l;
                     if (end == '}') {
-                        l = Collections.singletonList(readSeq(' ', null));
+                        l = Collections.singletonList(readSeq(' ', "{}"));
                         if ((sym = eofWas) instanceof Eof)
                             break;
                     } else {
@@ -1322,10 +1371,11 @@ interface YetiParser {
                 if (l.size() == 0)
                     throw new CompileException(sym, "Unexpected " + sym);
                 res.add(def(args, l, end == '}', doc));
+                if (args != null)
+                    doc = null;
                 args = null;
                 l = new ArrayList();
                 yetiDocStr = null;
-                doc = null;
             }
             eofWas = sym;
             if (end != ' ' && end != 'e' &&
@@ -1342,12 +1392,16 @@ interface YetiParser {
         }
 
         private Node readSeq(char end, Object kind) {
+            String doc = yetiDocStr;
             Node[] list = readMany(";", end);
             if (list.length == 1 && kind != Seq.EVAL) {
+                if (doc != null && list[0] instanceof Sym)
+                    yetiDocStr = doc;
                 return list[0];
             }
             if (list.length == 0) {
-                return new XNode("()").pos(line, p - lineStart);
+                return new XNode("()", end == ')' ? null : new Node[0])
+                            .pos(line, p - lineStart);
             }
             // find last element for line/col position
             Node w = list[list.length - 1];
@@ -1481,7 +1535,7 @@ interface YetiParser {
                                             new Node[parts.size()]));
         }
 
-        private Node readAStr() {
+        private Str readAStr() {
             int i = p, sline = line, scol = i - lineStart;
             String s = "";
             do {
@@ -1504,7 +1558,7 @@ interface YetiParser {
                 throw new CompileException(node,
                             "Expected typename, not a " + node);
             String s = ((Sym) node).sym;
-            if (!Character.isLowerCase(s.charAt(0)))
+            if (!Character.isLowerCase(s.charAt(0)) && s.charAt(0) != '_')
                 throw new CompileException(node,
                             "Typename must start with lowercase character");
             return s;
@@ -1512,10 +1566,31 @@ interface YetiParser {
 
         TypeDef readTypeDef() {
             TypeDef def = new TypeDef();
+            def.doc = yetiDocStr;
+            yetiDocStr = null;
             def.name = getTypename(fetch());
             List param = new ArrayList();
             Node node = fetch();
-            if (node instanceof BinOp && ((BinOp) node).op == "<") {
+            if (def.name == "opaque") {
+                def.kind = TypeDef.OPAQUE;
+            } else if (!(node instanceof Sym)) {
+            } else if (def.name == "shared") {
+                def.kind = TypeDef.SHARED;
+            } else if (def.name == "unshare") {
+                def.kind = TypeDef.UNSHARE;
+            }
+            if (def.kind != 0) {
+                def.name = getTypename(node);
+                if (def.kind == TypeDef.UNSHARE) {
+                    def.param = new String[0];
+                    (def.type = new TypeNode(def.name, new TypeNode[0]))
+                        .pos(node.line, node.col);
+                    return def;
+                }
+                node = fetch();
+            }
+            if (node instanceof BinOp && ((BinOp) node).op == "<" &&
+                def.kind != TypeDef.SHARED) {
                 do {
                     param.add(getTypename(fetch()));
                 } while ((node = fetch()).kind == ",");
@@ -1527,12 +1602,20 @@ interface YetiParser {
             if (node.kind != "=")
                 throw new CompileException(node, "Expected '=', not a " + node);
             def.param = (String[]) param.toArray(new String[param.size()]);
-            def.type = readType(true);
+            if ((def.type = readType(TYPE_NORMAL)) == null)
+                throw new CompileException(node,
+                            "Missing type in typedef declaration");
             return def;
         }
 
         // ugly all-in-one bastard type expression parser
-        TypeNode readType(boolean checkVariant) {
+        private static final int TYPE_NORMAL = 0;
+        private static final int TYPE_FUNRET = 1;
+        private static final int TYPE_VARIANT = 2;
+        private static final int TYPE_VARIANT_ARG = 3;
+
+        TypeNode readType(int checkVariant) {
+            yetiDocStr = null;
             int i = skipSpace();
             if (p >= src.length || src[i] == ')' || src[i] == '>') {
                 p = i;
@@ -1542,7 +1625,7 @@ interface YetiParser {
             TypeNode res;
             if (src[i] == '(') {
                 p = i + 1;
-                res = readType(true);
+                res = readType(TYPE_NORMAL);
                 if (p >= src.length || src[p] != ')') {
                     if (res == null)
                         throw new CompileException(sline, scol, "Unclosed (");
@@ -1599,24 +1682,27 @@ interface YetiParser {
                 res = new TypeNode("",
                         (TypeNode[]) param.toArray(new TypeNode[param.size()]));
                 res.pos(sline, scol);
-            } else {
+            } else do {
                 int start = i;
-                char c = ' ', dot = '_';
-                if (i < src.length) {
-                    if ((c = src[i]) == '~') {
-                        ++i;
-                        dot = '.';
-                    } else if (c == '^') {
-                        ++i;
-                    }
-                }
-                boolean maybeArr = c == '~' || c == '\'';
-                while (i < src.length && ((c = src[i]) > '~' || CHS[c] == 'x'
-                                          || c == dot || c == '$'))
+                char c = ' ', dot = '.';
+                if (i < src.length && ((c = src[i]) == '~' || c == '^'))
                     ++i;
-                while (maybeArr && i + 1 < src.length && // java arrays
-                       src[i] == '[' && src[i + 1] == ']')
-                    i += 2;
+                boolean maybeArr = c == '~' || c == '\'';
+                if (c != '.') {
+                    if (Character.isUpperCase(c))
+                        dot = '_';
+                    while (i < src.length && ((c = src[i]) > '~' ||
+                                CHS[c] == 'x' || c == dot || c == '$'))
+                        ++i;
+                    while (src[i - 1] == '.')
+                        --i;
+                }
+                if (maybeArr) {
+                    c = ' ';
+                    while (i + 1 < src.length && // java arrays
+                           src[i] == '[' && src[i + 1] == ']')
+                        i += 2;
+                }
                 if (i == start)
                     throw new CompileException(sline, scol,
                                 "Expected type identifier, not '" +
@@ -1624,29 +1710,40 @@ interface YetiParser {
                 p = i;
                 String sym = new String(src, start, i - start).intern();
                 ArrayList param = new ArrayList();
-                if (Character.isUpperCase(src[start])) {
-                    TypeNode node = readType(false);
+                if (dot == '_') { // Tag variant
+                    String doc = yetiDocStr;
+                    if (i < src.length && src[i] == '.')
+                        ++p;
+                    else
+                        sym = ".".concat(sym);
+                    TypeNode node = readType(TYPE_VARIANT_ARG);
                     if (node == null)
                         throw new CompileException(line, p - lineStart,
                                         "Expecting variant argument");
-                    node =  new TypeNode(sym, new TypeNode[] { node });
+                    node = new TypeNode(sym, new TypeNode[] { node });
+                    node.doc = doc;
                     node.pos(sline, scol);
-                    if (!checkVariant) {
+                    if (checkVariant == TYPE_VARIANT)
                         return node;
-                    }
                     param.add(node);
-                    while ((p = skipSpace() + 1) < src.length &&
-                           src[p - 1] == '|' &&
-                           (node = readType(false)) != null)
-                        param.add(node);
-                    --p;
-                    return (TypeNode)
+                    if (checkVariant != TYPE_VARIANT_ARG) {
+                        while ((p = skipSpace() + 1) < src.length &&
+                               src[p - 1] == '|' &&
+                               (node = readType(TYPE_VARIANT)) != null)
+                            param.add(node);
+                        --p;
+                    }
+                    res = (TypeNode)
                         new TypeNode("|", (TypeNode[]) param.toArray(
                                 new TypeNode[param.size()])).pos(sline, scol);
+                    break; // break do...while, go check for ->
                 }
+                if (c == '!')
+                    ++p;
                 if ((p = skipSpace()) < src.length && src[p] == '<') {
                     ++p;
-                    for (TypeNode node; (node = readType(true)) != null; ++p) {
+                    for (TypeNode node; (node = readType(TYPE_NORMAL)) != null;
+                            ++p) {
                         param.add(node);
                         if ((p = skipSpace()) >= src.length || src[p] != ',')
                             break;
@@ -1658,15 +1755,20 @@ interface YetiParser {
                 }
                 res = new TypeNode(sym,
                         (TypeNode[]) param.toArray(new TypeNode[param.size()]));
+                res.exact = c == '!';
                 res.pos(sline, scol);
-            }
-            if ((p = skipSpace()) + 1 >= src.length ||
-                    src[p] != '-' || src[p + 1] != '>')
+            } while (false);
+            if (checkVariant == TYPE_VARIANT)
+                throw new CompileException(res, "Invalid `| " + res.str() +
+                        "' in variant type (expecting Tag after `|')");
+            p = i = skipSpace();
+            if (checkVariant == TYPE_VARIANT_ARG || i + 1 >= src.length ||
+                    src[i] != '\u2192' && (src[i] != '-' || src[++i] != '>'))
                 return res;
             sline = line;
             scol = p - lineStart;
-            p += 2;
-            TypeNode arg = readType(false);
+            p = i + 1;
+            TypeNode arg = readType(TYPE_FUNRET);
             if (arg == null)
                 throw new CompileException(sline, scol,
                                 "Expecting return type after ->");
@@ -1684,7 +1786,9 @@ interface YetiParser {
             String s = new String(src, p, i - p);
             if (s.equals("module") || s.equals("program")) {
                 p = i;
-                moduleName = readDotted("Expected " + s + " name, not a ").sym;
+                Sym name = readDotted("Expected " + s + " name, not a ");
+                moduleName = name.sym;
+                moduleNameLine = name.line;
                 isModule = s.equals("module");
 
                 if (isModule) {
@@ -1704,7 +1808,7 @@ interface YetiParser {
             }
             char first = p < src.length ? src[p] : ' ';
             Node res;
-            if ((flags & YetiC.CF_EVAL_STORE) != 0) {
+            if ((flags & Compiler.CF_EVAL_STORE) != 0) {
                 res = readSeq(' ', Seq.EVAL);
                 if (res instanceof Seq) {
                     Seq seq = (Seq) res;

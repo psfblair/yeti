@@ -34,8 +34,8 @@ import java.io.Serializable;
 
 /** Yeti core library - List. */
 public class LList extends AList implements Serializable {
-    Object first;
-    AList rest;
+    private final Object first;
+    private final AList rest;
 
     public LList(Object first, AList rest) {
         this.first = first;
@@ -83,17 +83,6 @@ public class LList extends AList implements Serializable {
         return i == null && j == null;
     }
 
-    public String toString() {
-        StringBuffer buf = new StringBuffer("[");
-        buf.append(Core.show(first()));
-        for (AIter i = rest(); i != null; i = i.next()) {
-            buf.append(',');
-            buf.append(Core.show(i.first()));
-        }
-        buf.append(']');
-        return buf.toString();
-    }
-
     public int compareTo(Object obj) {
         AIter i = this, j = (AIter) obj;
         while (i != null && j != null) {
@@ -111,10 +100,13 @@ public class LList extends AList implements Serializable {
     }
 
     public AList reverse() {
-        AList l = null;
-        for (AIter i = this; i != null; i = i.next()) {
+        AIter i;
+        if ((i = next()) == null)
+            return this;
+        AList l = new LList(first(), null);
+        do {
             l = new LList(i.first(), l);
-        }
+        } while ((i = i.next()) != null);
         return l;
     }
 
@@ -158,6 +150,10 @@ public class LList extends AList implements Serializable {
     }
     
     public Object copy() {
+        return null;
+    }
+
+    public AList take(int from, int count) {
         return null;
     }
 }

@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,6 +30,9 @@
  */
 package yeti.lang;
 
+import java.io.IOException;
+import java.io.OutputStream;
+
 /** Yeti core library - Concat list. */
 final class ConcatList extends LList {
     private boolean mappedRest;
@@ -42,14 +45,34 @@ final class ConcatList extends LList {
         this.tail = tail;
     }
 
+    public synchronized AIter next() {
+        if (!mappedRest) {
+            AIter i = src.next();
+            if (i != null)
+                tail = new ConcatList(i, tail);
+            src = null;
+            mappedRest = true;
+        }
+        return tail;
+    }
+
     public synchronized AList rest() {
         if (!mappedRest) {
             AIter i = src.next();
-            rest = i == null ? tail : new ConcatList(i, tail);
+            if (i != null)
+                tail = new ConcatList(i, tail);
             src = null;
-            tail = null;
             mappedRest = true;
         }
-        return rest;
+        return tail;
+    }
+
+    synchronized AIter write(OutputStream out) throws IOException {
+        if (mappedRest)
+            return super.write(out);
+        AIter i = src.dup();
+        while (i != null)
+            i = i.write(out);
+        return tail.write(out);
     }
 }

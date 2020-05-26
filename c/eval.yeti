@@ -1,6 +1,7 @@
 /*
  * Yeti compiler and eval (derived from old REPL module) interface.
- * Copyright (c) 2008,2009,2011 Madis Janson
+ *
+ * Copyright (c) 2008-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,7 +28,10 @@
  */
 
 /**
- Yeti compiler invocation and code evaluation.
+ * Yeti compiler invocation and code evaluation.
+ *
+ * This module is also used by the yeti.lang.compiler.yeti program
+ * to provide a REPL and compile Yeti code.
  */
 module yeti.lang.compiler.eval;
 
@@ -39,16 +43,25 @@ import java.io.File;
 load yeti.lang.compiler.showtype;
 
 typedef typedef_description = {
+    /// The name of the new type alias defined by the typedef.
     name is string,
+    /// Type assigned to the type alias.
     type is type,
+    /// Type parameter names.
     param is list<string>
 }
 
 typedef module_description = {
+    /// Description of the module from the top doc-string.
     doc is string,
+    /// Module name (like `yeti.lang.compiler.eval`).
     name is string,
+    /// Module type signature.
     type is type,
-    typedefs is list<typedef_description>
+    /// List of typedefs exported by the module.
+    typedefs is list<typedef_description>,
+    /// Compilation was skipped, type don't have doc-strings.
+    skipped is boolean
 }
 
 // XXX: Beware - the GlobalSandbox argument sets a very restricive
@@ -70,7 +83,7 @@ execClass argv sandbox eval loader mainClass
                     void checkPermission(Permission perm)
                         this#checkPermission(perm, ()),
                     void checkPermission(Permission perm, Object context)
-                        if act.[0] then
+                        if act[0] then
                             throw new java.lang.SecurityException()
                         fi,
                     void checkExit(int status)
@@ -80,12 +93,12 @@ execClass argv sandbox eval loader mainClass
                 System#setSecurityManager(new Sandbox(sandboxed));
                 // can't activate before, because
                 // setSecurityManager would fail otherwise
-                sandboxed.[0] := true
+                sandboxed[0] := true
             fi;
             f ()
         else
             aa = new Object[1];
-            aa.[0] := argv is array<string> as ~String[] as ~Object;
+            aa[0] := argv is array<string> as ~String[] as ~Object;
             c#getMethod("main", [classOf String[]])#invoke((), aa)
         fi
     finally
@@ -95,33 +108,44 @@ execClass argv sandbox eval loader mainClass
         fi
     yrt);
 
-createCtx reader genericOpt =
+createCtx genericOpt cl =
    (var warn = \() is ~CompileException -> ();
     var classPath = [] is list<string>;
-    ctx = new CompileCtx(reader is ~YetiC, ());
+    var flags = 0;
+    ctx = new Compiler();
     java = array [];
 
-    for genericOpt do opt:
-        case opt of
+    for genericOpt
+       \case of
 
         /// Set destination directory, where to write class files.
         /// Disables execution on evaluateYetiCode as side effect.
         To dir:
+            dir = if dir != '' then "\(dir)/" else '' fi;
             if nullptr? ctx#writer and dir != '' then
                 push java '-d';
                 push java dir;
             fi;
-            ctx#writer := new ToFile(dir) as ~CodeWriter;
+            ctx#writer := new FileWriter(dir) as ~yeti.lang.Fun;
+            ctx#depDestDir := dir;
 
-        /// Set custom source reader function
+        /// Set custom source reader function.
         SourceReader f:
-            reader#override :=
-                f is {var .name is string, .fullpath is boolean} -> string
-                  as ~yeti.lang.Fun;
+            ctx#customReader := 
+                f is {
+                    /// Source file name (may include directories).
+                    /// The reader function should assign a canonical path
+                    /// of the source file to it.
+                    var .name is string,
+                    /// Parent directory from source path entry.
+                    /// Can be undef_str, when not searched
+                    /// from the source path.
+                    .parent is string
+                } -> string as ~yeti.lang.Fun;
 
-        /// Set custom CodeWriter
-        CodeWriter writer:
-            ctx#writer := writer;
+        /// Set custom class writing function.
+        ClassWriter writer:
+            ctx#writer := writer is string -> ~byte[] -> () as ~yeti.lang.Fun;
 
         /// Set warning handler (~CompileException -> ()).
         /// Called once for each warning.
@@ -132,30 +156,43 @@ createCtx reader genericOpt =
         ClassPath path: classPath := classPath ++ path;
 
         /// If you have really broken JVM, generate superfluous casts.
-        ICast ():     ctx#isGCJ := true;
+        ICast (): ctx#isGCJ := true;
 
         /// Set modules that are preloaded. Default is yeti.lang.std and io.
-        Preload p:    ctx#preload := p is list?<string> as ~String[];
+        Preload p: ctx#preload := p is list?<string> as ~String[];
 
         /// Print parse tree to stdout.
         /// Not very useful, unless you want to debug the compiler.
-        ParseTree (): ctx#flags := ctx#flags b_or YetiC#CF_PRINT_PARSE_TREE;
+        ParseTree (): flags := flags b_or Compiler#CF_PRINT_PARSE_TREE;
 
         /// Disable importing foreign classes. Useful when sandboxing.
-        NoImport ():  ctx#flags := ctx#flags b_or YetiC#CF_NO_IMPORT;
+        NoImport ():
+            ctx#globalFlags := ctx#globalFlags b_or Compiler#GF_NO_IMPORT;
 
-        /// Disable generation of Java 1.6 frames to class files (mainly useful
-        /// for debugging, this option is not needed to run on older JVMs).
+        /// Disable generation of Java 1.6 frames to class files.
+        ///
+        /// Mainly useful for debugging, this option is not needed
+        /// to run on older JVMs.
         NoFrames (): ctx#classWriterFlags := 0
-        esac
-    done;
-    ctx#classPath := new ClassFinder(classPath);
+        esac;
+    ctx#classPath := new ClassFinder(classPath, ctx#depDestDir);
     if nullptr? ctx#writer then
-        ctx#writer := new Loader() as ~CodeWriter;
+        var cl = cl;
+        if nullptr? cl then
+            cl := Thread#currentThread()#getContextClassLoader();
+            if not empty? classPath then
+                urls = array [];
+                for classPath do p:
+                    push urls new File(p)#toURI()#toURL()
+                done;
+                cl := new java.net.URLClassLoader(urls, cl) as ~ClassLoader
+            fi
+        fi;
+        ctx#writer := new Loader(cl) as ~yeti.lang.Fun;
     fi;
-    {warn, ctx, java});
+    {warn, ctx, flags, java});
 
-nullTypeAction _ is module_description -> () = ();
+nullTypeAction = const ();
 
 moduleDoc m is ~ModuleType -> module_description = {
     doc = m#topDoc,
@@ -166,7 +203,7 @@ moduleDoc m is ~ModuleType -> module_description = {
         typedefs = array [];
         addDef name def scope =
            (param = array [];
-            type = TypeDescr#typeDef(def unsafely_as ~YType[],
+            type = TypeDescr#typeDef(def is ~YType[],
                                      param unsafely_as ~yeti.lang.MList,
                                      scope is ~TypePattern);
             push typedefs {
@@ -179,39 +216,84 @@ moduleDoc m is ~ModuleType -> module_description = {
             i = m#typeDefs#entrySet()#iterator();
             i#hasNext() loop
                (e = i#next() unsafely_as ~java.util.Map$Entry;
-                addDef e#getKey() e#getValue() (() as ~TypePattern));
+                addDef e#getKey() (e#getValue() unsafely_as ~YType[])
+                       (() as ~TypePattern));
             sortBy (on (<) (.name)) typedefs
         else
             defined = new java.util.HashMap(m#typeDefs);
             count = m#typeDefs#size();
             not nullptr? scope and length typedefs < count loop
-               (if not nullptr? scope#typeDef
+               (typeDef = scope#typedef(false);
+                if not nullptr? typeDef 
                         and not nullptr? defined#remove(scope#name) then
-                    addDef scope#name scope#typeDef
-                           TypePattern#toPattern(scope#outer)
+                    addDef scope#name typeDef TypePattern#toPattern(scope#outer,
+                                                                    true)
                 fi;
                 scope := scope#outer);
             reverse typedefs
-        fi
+        fi,
+
+    skipped = m#fromClass,
 };
 
+/**
+ * Compiles a set of Yeti (and possibly Java) source files into
+ * JVM class files. Module dependencies will be automatically compiled,
+ * if possible.
+ *
+ * Arguments:
+ * genericOptions - generic compile options
+ * options        - additional options
+ * source         - list of the source files to compile
+ *
+ * Description:
+ * Compiles the source files into class files. Yeti sources (identified
+ * by the `.yeti` suffix) will be compiled directly. The Java sources
+ * (with `.java` suffix) will be compiled by invoking the javac compiler
+ * class com.sun.tools.javac.Main (`lib/tools.jar` is loaded from the
+ * JDK home, if the class is not already available).
+ *
+ * On mixed compiles a three-way sequence is done, by partially parsing
+ * the Java source files first to obtain the class types, compiling
+ * Yeti sources and finally compiling Java sources using javac.
+ *
+ * The source and class files don't have to be necessarily on
+ * the filesystem, if `SourceReader` or `ClassWriter` options are used
+ * and only Yeti code is compiled (the javac compiler used for
+ * the Java code works only with filesystem).
+ *
+ * Examples:
+ * : load yeti.lang.compiler.eval;
+ * :
+ * : compileYetiFiles [To 'target'] [] ['hello.yeti'];
+ * A `hello.class` will be generated to the target directory,
+ * given that you have the following `hello.yeti` file:
+ * : println 'Hello world!';
+ *
+ * The compiled code can be executed with the usual `java` command:
+ * : java -cp yeti.jar:target hello
+ * 
+ * The `yeti.jar` (or `yeti-lib.jar`) is required here for
+ * the Yeti standard library.
+ */
 compileYetiFiles genericOpt options files =
    (var exec = false;
     var execArg = array [];
     var typeAction = nullTypeAction;
     var mainClass = '';
 
-    reader = new YetiC();
-    {ctx, warn, java = javaOptions} = createCtx reader genericOpt;
+    param = createCtx genericOpt (() as ~ClassLoader);
+    {ctx} = param;
 
     sourcePath = array [];
-    for options do opt:
-        case opt of
+    for options
+       \case of
 
-        /// Get module types. The action ({type is type, doc is string} -> ())
+        /// Get module types. The action (`module_description -> ()`)
         /// is called after each module file given for compilation. 
         Type action:
             typeAction := action;
+            ctx#globalFlags := ctx#globalFlags b_or Compiler#GF_DOC;
 
         /// Execute main after compilation of the sources.
         /// The _argv will be set to the arg parameter.
@@ -231,33 +313,41 @@ compileYetiFiles genericOpt options files =
         /// Option to give to the javac,
         /// when .java files were in source file set.
         JavaOption option:
-            push javaOptions option;
-        esac
-    done;
+            push param.java option;
+        esac;
+
     // TODO use null writer when no Exec and no To,
     // for signaling to skip the bytecode generation.
-    reader#basedirs := sourcePath as ~String[];
+    ctx#setSourcePath(sourcePath);
     if not same? typeAction nullTypeAction and not exec
             and ctx#writer instanceof Loader then
-        CompileCtx#currentCompileCtx#set(ctx);
-        for files do src:
-            typeAction (moduleDoc YetiTypeVisitor#getType((), src, true))
+        ctx#writer := () as ~yeti.lang.Fun;
+        Compiler#currentCompiler#set(ctx);
+        for (list files) do src:
+            typeAction (moduleDoc YetiTypeVisitor#getType(ctx, (), src, true))
         done
     else
         try
-            mainClass := ctx#compileAll(sort (list files), 0, javaOptions)
+            var flags = param.flags;
+            if exec and length files == 1 then
+                flags := flags b_or Compiler#CF_EXPECT_PROGRAM
+            fi;
+            mainClass := ctx#compileAll(sort files, flags, param.java)
         finally
-            ctx#enumWarns(warn)
+            ctx#enumWarns(param.warn)
         yrt;
         if not same? typeAction nullTypeAction then
             i = ctx#types#values()#iterator();
             i#hasNext() loop
-                typeAction (moduleDoc (i#next() unsafely_as ~ModuleType))
+               (t = i#next() unsafely_as ~ModuleType;
+                if t#hasSource then
+                    typeAction (moduleDoc t)
+                fi)
         fi
     fi;
     if exec then
         if mainClass != '' then
-            classLoader = ctx#writer unsafely_as ~ClassLoader;
+            classLoader = (ctx#writer unsafely_as ~Loader)#mem;
             // The Java reflection API used by execClass to invoke main() will
             // wrap exceptions from user code into InvocationTargetException,
             // so we don't need to do anything here with those exceptions.
@@ -267,9 +357,46 @@ compileYetiFiles genericOpt options files =
         fi
     fi);
 
+/**
+ * Evaluates Yeti expression.
+ *
+ * Arguments:
+ * genericOptions    - generic compile options
+ * evaluationOptions - options about evaluating
+ * expression        - string containing the Yeti code
+ *
+ * Description:
+ * Compiles the expression in memory to JVM class(es),
+ * and then lets the JVM to load and execute the bytecode
+ * from these generated classes.
+ *
+ * Examples:
+ * Run a chunk of code, ignoring the result value:
+ * : load yeti.lang.compiler.eval;
+ * :
+ * : _ = evaluateYetiCode [] [] 'println "Hello world"';
+ *
+ * Evaluate expression with specific binding environment:
+ * : // Creates the environment
+ * : env = evaluateYetiCode [];
+ * :
+ * : // bind variable in the environment
+ * : case env [Bind ()] 'x = 40' of
+ * : {result = Result _}: (); // OK
+ * : {str}: failWith str;
+ * : esac;
+ * :
+ * : // use the binding 
+ * : res = env [] 'x + 2';
+ * : println res;
+ *
+ * The last println should print the following line:
+ * : {bindings=[], result=Result 42, str="42 is number\n", type=Simple "number"}
+ */
 evaluateYetiCode genericOpt =
    (var evalEnv = () as ~YetiEval;
     mainClass = "code";
+    var cl = () as ~ClassLoader;
     do options code:
         bindingVars = array [];
         var type = Simple '()';
@@ -278,14 +405,20 @@ evaluateYetiCode genericOpt =
         var sandbox = false;
         var argv = array [];
         var sourceName = undef_str;
-        {ctx, warn} = createCtx new YetiC() genericOpt;
-        ctx#flags := ctx#flags b_or YetiC#CF_EVAL b_or YetiC#CF_EVAL_RESOLVE;
+        param = createCtx genericOpt cl;
+        {ctx} = param;
+        var flags = param.flags b_or Compiler#CF_EVAL
+                                b_or Compiler#CF_EVAL_RESOLVE;
+        if ctx#writer instanceof Loader then
+            cl := (ctx#writer unsafely_as ~Loader)#mem#getParent()
+        fi;
 
-        for options do opt:
-            case opt of
-            /// Store top-level bindings in the evaluation environment,
-            /// so they could be accessed by later evaluations with
-            /// the same context..
+        for options
+           \case of
+            /// Store top-level bindings in the evaluation environment.
+            ///
+            /// Allows the bindings to be accessed by later evaluations with
+            /// the same context.
             Bind (): bind := true;
 
             /// Set _argv to given parameter turing execution.
@@ -302,7 +435,6 @@ evaluateYetiCode genericOpt =
             /// Source "filename"
             Source name: sourceName := name;
             esac;
-        done;
 
         typeOf? = code =~ '\Wis$';
 
@@ -316,7 +448,7 @@ evaluateYetiCode genericOpt =
                fi;
 
         if bind then
-            ctx#flags := ctx#flags b_or YetiC#CF_EVAL_STORE;
+            flags := flags b_or Compiler#CF_EVAL_STORE;
         fi;
 
         if nullptr? evalEnv then
@@ -328,13 +460,14 @@ evaluateYetiCode genericOpt =
 
         oldContext = YetiEval#set(evalEnv);
 
+        /// The result of evaluation.
         result =
             try
                 compileErr =
                     try
-                        t = ctx#compile(sourceName, mainClass, code, ctx#flags);
+                        t = ctx#compile(sourceName, code, flags);
                         type := if typeOf? then
-                                    TypeDescr#yetiType(t#type, ())
+                                    TypeDescr#yetiType(t#type, (), ())
                                 else
                                     t#yetiType()
                                 fi unsafely_as type;
@@ -342,13 +475,13 @@ evaluateYetiCode genericOpt =
                     catch CompileException ex:
                         ex
                     finally
-                        ctx#enumWarns(warn)
+                        ctx#enumWarns(param.warn)
                     yrt;
                 if not nullptr? compileErr then
                     CompileException compileErr
                 elif exec and ctx#writer instanceof Loader then
                     val = Result (execClass argv sandbox true
-                                            (ctx#writer unsafely_as ~Loader)
+                                            (ctx#writer unsafely_as ~Loader)#mem
                                             mainClass);
                     bindBarrier < bindings#size() loop
                        (push bindingVars (bindings#get(bindBarrier)
@@ -376,7 +509,7 @@ evaluateYetiCode genericOpt =
 
         bindings () =
            (res = array [];
-            for bindingVars do binding:
+            for (list bindingVars) do binding:
                 if not binding#isImport then
                     t = binding#type;
                     push res "\(if binding#mutable then "var " else "" fi)\
@@ -393,10 +526,17 @@ evaluateYetiCode genericOpt =
             res);
 
         {
-            type, result,
-        
+            /// The inferred type of the evaluated expression.
+            type = type, result,
+            
+            /// List of new bindings created in
+            /// the environment during evaluation.
+            ///
+            /// The Yeti syntax "name is type = value" is used.
             get bindings () = list (bindings ()),
 
+            /// The result of evaluation formatted as string, like the Yeti
+            /// REPL would print it (actually Yeti REPL uses this getter).
             get str () =
                 res = bindings ();
                 case result of
@@ -408,14 +548,147 @@ evaluateYetiCode genericOpt =
                     if typeOf? then
                         push res (showType [] '' type)
                     elif type != Simple "()" then
-                        push res
-                             "\(Core#show(val)) is \(showType [] '' type)"
+                        s = try
+                                Core#show(val)
+                            catch Exception ex:
+                                stackTraceString ex
+                            yrt;
+                        push res "\(s) is \(showType [] '' type)"
                     fi
                 esac;
                 strJoin '' (map (^ "\n") res),
         }
     done);
 
+/**
+ * Generates HTML documentation for the given set of module descriptions.
+ *
+ * Examples:
+ * The module descriptions can be obtained using the `compileYetiFiles`
+ * function with `Type` option.
+ * : load yeti.lang.compiler.eval;
+ * :
+ * : modules = array [];
+ * : compileYetiFiles [] [Type (push modules)] ['modules/xml.yeti'];
+ * : generateYetiDoc {directory = 'doctest', modules, error = failWith};
+ *
+ * This should generate the documentation HTML into directory named `doctest`
+ * (given that the `modules/xml.yeti` module source file can be found).
+ */
+generateYetiDoc {directory, modules, error} is {
+            /// Directory where to write the generated HTML files.
+            ///
+            /// The directory is created if it doesn't exist already.
+            .directory is 'a,
+            /// List of module descriptions.
+            .modules is 'b,
+            /// Error handler (takes error message as argument).
+            .error is 'c
+        } -> () =
+   (cl = classOf YetiEval#getClassLoader();
+    ctx = evaluateYetiCode [ICast (),
+            ClassWriter (new Loader(cl) unsafely_as string -> ~byte[] -> ())];
+    case ctx [Bind (), Source 'doc.yeti', Exec (array [directory])]
+             ((inputHandle cl#getResourceAsStream('doc.yeti')
+                           'UTF-8').contents ()) of
+    {result = Result obj}:
+        {moduleDoc, docIndex} = obj is ~Object unsafely_as 'a;
+        createPath directory;
+        for (modules is list?<module_description>) moduleDoc;
+        docIndex ();
+    {str}:
+        error str is ()
+    esac);
+
+import org.apache.tools.ant.BuildException;
+import org.apache.tools.ant.taskdefs.MatchingTask;
+import org.apache.tools.ant.types.FileSet;
+import org.apache.tools.ant.types.Path;
+
+class YetiTask extends MatchingTask
+    genOpt = array [],
+    options = array [],
+    modules = array [],
+    sources = array [],
+    var src = () as ~File,
+    var classPath = () as ~Path,
+    var docDir = undef_str,
+
+    void setSrcDir(String dir)
+        src := new File(dir unsafely_as ~String),
+
+    void setDestDir(String dir)
+        push genOpt (To dir),
+
+    void setPreload(String preload)
+        push genOpt (Preload (strSplit ':' preload)),
+
+    void setJavaOpt(String option)
+        for (strSplit ' +' option) (push options . JavaOption),
+        
+    void setDocDir(String dir)
+        push options (Type (push modules));
+        docDir := dir,
+
+    void addSrc(FileSet src)
+        push sources src,
+
+    Path createClasspath()
+        if nullptr? classPath then
+            classPath := new Path(this#getProject())
+        fi;
+        classPath,
+
+    void setICast(boolean icast)
+        if icast then
+            push genOpt (ICast ())
+        fi,
+
+    void execute()
+        if not this#fileset#hasPatterns() then
+            this#setIncludes("*.yeti")
+        fi;
+        scanners = array [];
+        if empty? sources or not nullptr? src then
+            if nullptr? src then
+                src := this#getProject()#getBaseDir()
+            fi;
+            push scanners this#getDirectoryScanner(src)
+        fi;
+        for (list sources) do s:
+            if not s#hasPatterns() then
+                s#setIncludes("*.yeti")
+            fi;
+            push scanners s#getDirectoryScanner(this#getProject())
+        done;
+        files = array [];
+        for (list scanners) do scanner:
+            for (list scanner#getIncludedFiles()) do f:
+                push files new File(scanner#getBasedir(), f)#getPath()
+            done;
+            push options (SourceDir scanner#getBasedir()#getPath())
+        done;
+        cp = if nullptr? classPath then [] else map string classPath#list() fi;
+        push genOpt (ClassPath cp);
+        warn ex = this#log((ex is ~CompileException)#getMessage());
+        push genOpt (Warn warn);
+        options = JavaOption "-encoding" :: JavaOption utf8 :: options;
+        this#log("Compiling \(length files) files.");
+        try
+            compileYetiFiles genOpt options files;
+            if not empty? modules then
+                generateYetiDoc {directory = docDir, modules, error = failWith}
+            fi
+        catch CompileException ex:
+            throw new BuildException(ex#getMessage())
+        catch Failure ex:
+            throw new BuildException(ex#getMessage())
+        catch Exception ex:
+            ex#printStackTrace();
+            throw new BuildException(ex)
+        yrt
+end;
+
 {
-    compileYetiFiles, evaluateYetiCode
+    compileYetiFiles, evaluateYetiCode, generateYetiDoc
 }

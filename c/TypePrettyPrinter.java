@@ -3,7 +3,7 @@
 /**
  * Yeti type pretty-printer.
  *
- * Copyright (c) 2010 Madis Janson
+ * Copyright (c) 2010-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -65,8 +65,9 @@ class ShowTypeFun extends Fun2 {
             ? useNL ? "\n" + indent + "| " : " | "
             : useNL ? ",\n".concat(indent) : ", ";
 
+        Struct field = null;
         for (i = fields; i != null; i = i.next()) {
-            Struct field = (Struct) i.first();
+            field = (Struct) i.first();
             if (i != fields) // not first
                 to.append(sep);
             else if (useNL && !variant)
@@ -87,13 +88,22 @@ class ShowTypeFun extends Fun2 {
                     to.append("var ");
                 to.append(field.get("tag"));
             }
-            to.append(field.get("name")).append(variant ? " " : " is ");
+            to.append(field.get("name"));
+            if (variant)
+                to.append(field.get("tag"));
+            to.append(variant ? " " : " is ");
             Tag fieldType = (Tag) field.get("type");
             Object tstr = showType.apply(indent_, fieldType);
-            if (variant && fieldType.name == "Function")
+            if (variant && (fieldType.name == "Function" ||
+                            fieldType.name == "Variant"))
                 to.append('(').append(tstr).append(')');
             else
                 to.append(tstr);
+        }
+        try {
+            if (field != null && field.get("strip") != null)
+                to.append(sep).append("...");
+        } catch (Exception ex) {
         }
         if (useNL && !variant)
             to.append("\n").append(oldIndent);
@@ -158,6 +168,37 @@ class ShowTypeFun extends Fun2 {
     }
 }
 
+class DescrCtx {
+    TypePattern defs;
+    Map vars = new HashMap();
+    Map refs = new HashMap();
+    List trace;
+
+    String getVarName(YType t) {
+        String v = (String) vars.get(t);
+        if (v == null) {
+            // 26^7 > 2^32, should be enough ;)
+            char[] buf = new char[10];
+            int p = buf.length;
+            if ((t.flags & YetiType.FL_ERROR_IS_HERE) != 0)
+                buf[--p] = '*';
+            int n = vars.size() + 1;
+            while (n > 26) {
+                buf[--p] = (char) ('a' + n % 26);
+                n /= 26;
+            }
+            buf[--p] = (char) (96 + n);
+            if ((t.flags & YetiType.FL_TAINTED_VAR) != 0)
+                buf[--p] = '_';
+            buf[--p] =
+                (t.flags & YetiType.FL_ORDERED_REQUIRED) == 0 ? '\'' : '^';
+            v = new String(buf, p, buf.length - p);
+            vars.put(t, v);
+        }
+        return v;
+    }
+}
+
 class TypeDescr extends YetiType {
     private int type;
     private String name;
@@ -168,6 +209,15 @@ class TypeDescr extends YetiType {
 
     TypeDescr(String name_) {
         name = name_;
+    }
+
+    static Struct pair(String name1, Object value1,
+                       String name2, Object value2) {
+        // low-level implementation-specific struct, don't do that ;)
+        Struct3 result = new Struct3(new String[] { name1, name2 }, null);
+        result._0 = value1;
+        result._1 = value2;
+        return result;
     }
 
     Tag force() {
@@ -187,7 +237,7 @@ class TypeDescr extends YetiType {
         case FUN:
             tag = "Function"; break;
         case MAP:
-            val = YetiC.pair("params", l, "type", name);
+            val = pair("params", l, "type", name);
             tag = "Parametric"; break;
         case STRUCT:
             tag = "Struct"; break;
@@ -197,31 +247,37 @@ class TypeDescr extends YetiType {
         Tag res = new Tag(val, tag);
         if (alias == null)
             return res;
-        return new Tag(YetiC.pair("alias", alias, "type", res), "Alias");
+        return new Tag(pair("alias", alias, "type", res), "Alias");
     }
 
-    static Tag yetiType(YType t, TypePattern defs) {
-        return prepare(t, defs, new HashMap(), new HashMap()).force();
+    static Tag yetiType(YType t, TypePattern defs, TypeException path) {
+        DescrCtx ctx = new DescrCtx();
+        ctx.defs = defs;
+        if (path != null)
+            ctx.trace = path.trace;
+        return prepare(t, ctx).force();
     }
 
     static Tag typeDef(YType[] def, MList param, TypePattern defs) {
-        Map vars = new HashMap();
+        DescrCtx ctx = new DescrCtx();
+        ctx.defs = defs;
         for (int i = 0, n = 0; i < def.length - 1; ++i) {
-            String name = def[i].doc instanceof String
-                ? (String) def[i].doc : "t" + ++n;
-            vars.put(def[i].deref(), name);
+            // the .doc don't work
+            //String name = def[i].doc instanceof String
+            //    ? (String) def[i].doc : "t" + ++n;
+            String name = "t" + ++n;
+            ctx.vars.put(def[i].deref(), name);
             param.add(name);
         }
-        return prepare(def[def.length - 1], defs, vars, new HashMap()).force();
+        return prepare(def[def.length - 1], ctx).force();
     }
 
-    private static void hdescr(TypeDescr descr, YType tt,
-                               TypePattern defs, Map vars, Map refs) {
+    private static void hdescr(TypeDescr descr, YType tt, DescrCtx ctx) {
         Map m = new java.util.TreeMap();
-        if (tt.partialMembers != null)
-            m.putAll(tt.partialMembers);
-        if (tt.finalMembers != null) {
-            Iterator i = tt.finalMembers.entrySet().iterator();
+        if (tt.requiredMembers != null)
+            m.putAll(tt.requiredMembers);
+        if (tt.allowedMembers != null) {
+            Iterator i = tt.allowedMembers.entrySet().iterator();
             while (i.hasNext()) {
                 Map.Entry e = (Map.Entry) i.next();
                 YType t = (YType) e.getValue();
@@ -230,9 +286,26 @@ class TypeDescr extends YetiType {
                     t.doc = v;
             }
         }
+        Object name;
+        // Stupid list is used, because normally it shouldn't ever contain
+        // over 1 or 2 elements, and it's faster than hash in this case.
+        List strip = null;
+        if (ctx.trace != null)
+            for (int i = 0, last = ctx.trace.size() - 3; i <= last; i += 3)
+                if (ctx.trace.get(i + 1) == tt || ctx.trace.get(i + 2) == tt) {
+                    if (strip == null)
+                        strip = new ArrayList();
+                    if (m.containsKey(name = ctx.trace.get(i)) &&
+                            !strip.contains(name))
+                        strip.add(name);
+                }
+        if (strip != null && strip.size() >= m.size())
+            strip = null; // everything is included, no stripping actually
         for (Iterator i = m.entrySet().iterator(); i.hasNext(); ) {
             Map.Entry e = (Map.Entry) i.next();
-            Object name = e.getKey();
+            name = e.getKey();
+            if (strip != null && !strip.contains(name))
+                continue;
             YType t = (YType) e.getValue();
             Map it = new IdentityHashMap(5);
             String doc = t.doc();
@@ -240,127 +313,134 @@ class TypeDescr extends YetiType {
             it.put("description", doc == null ? Core.UNDEF_STR : doc);
             it.put("mutable", Boolean.valueOf(t.field == FIELD_MUTABLE));
             it.put("tag",
-                tt.finalMembers == null || !tt.finalMembers.containsKey(name)
-                    ? "." :
-                tt.partialMembers != null && tt.partialMembers.containsKey(name)
-                    ? "`" : "");
-            TypeDescr field = prepare(t, defs, vars, refs);
+                tt.allowedMembers == null || !tt.allowedMembers.containsKey(name)
+                    ? tt.type == STRUCT ? "." : "" :
+                tt.requiredMembers != null && tt.requiredMembers.containsKey(name)
+                    ? "`" : tt.type == STRUCT ? "" : ".");
+            it.put("strip", strip);
+            TypeDescr field = prepare(t, ctx);
             field.properties = it;
             field.prev = descr.value;
             descr.value = field;
         }
     }
 
-    private static String getVarName(YType t, Map vars) {
-        String v = (String) vars.get(t);
-        if (v == null) {
-            // 26^7 > 2^32, should be enough ;)
-            char[] buf = new char[10];
-            int p = buf.length;
-            if ((t.flags & FL_ERROR_IS_HERE) != 0)
-                buf[--p] = '*';
-            int n = vars.size() + 1;
-            while (n > 26) {
-                buf[--p] = (char) ('a' + n % 26);
-                n /= 26;
-            }
-            buf[--p] = (char) (96 + n);
-            if ((t.flags & FL_TAINTED_VAR) != 0)
-                buf[--p] = '_';
-            buf[--p] = (t.flags & FL_ORDERED_REQUIRED) == 0 ? '\'' : '^';
-            v = new String(buf, p, buf.length - p);
-            vars.put(t, v);
+    private static boolean match(TypeDescr descr, YType t, DescrCtx ctx) {
+        Map defVars = null;
+        TypePattern def = null;
+        if (ctx.defs == null ||
+              (def = ctx.defs.match(t, defVars = new IdentityHashMap())) == null
+              || def.end == null)
+            return false;
+        descr.name = def.end.typename;
+        if (def.end.defvars.length == 0) {
+            descr.type = 0;
+            return true;
         }
-        return v;
+        ctx.refs.put(t, descr); // to avoid infinite recursion
+        descr.type = MAP; // Parametric
+        Map param = new HashMap();
+        for (Iterator i = defVars.entrySet().iterator(); i.hasNext();) {
+            Map.Entry e = (Map.Entry) i.next();
+            param.put(e.getValue(), e.getKey());
+        }
+        for (int i = def.end.defvars.length; --i >= 0; ) {
+            YType tp = (YType) param.get(new Integer(def.end.defvars[i]));
+            TypeDescr item = tp != null ? prepare(tp, ctx) : new TypeDescr("?");
+            item.prev = descr.value;
+            descr.value = item;
+        }
+        if (descr.alias == null) // no recursive refs in parameters?
+            ctx.refs.remove(t);
+        return true;
     }
-    
-    private static TypeDescr prepare(YType t, TypePattern defs,
-                                     Map vars, Map refs) {
+
+    private static TypeDescr prepare(YType t, DescrCtx ctx) {
         final int type = t.type;
         if (type == VAR) {
             if (t.ref != null)
-                return prepare(t.ref, defs, vars, refs);
-            return new TypeDescr(getVarName(t, vars));
+                return prepare(t.ref, ctx);
+            return new TypeDescr(ctx.getVarName(t));
         }
         if (type < PRIMITIVES.length)
             return new TypeDescr(TYPE_NAMES[type]);
         if (type == JAVA)
             return new TypeDescr(t.javaType.str());
         if (type == JAVA_ARRAY)
-            return new TypeDescr(prepare(t.param[0], defs, vars, refs)
-                                    .name.concat("[]"));
-        TypeDescr descr = (TypeDescr) refs.get(t), item;
+            return new TypeDescr(prepare(t.param[0], ctx).name.concat("[]"));
+        TypeDescr descr = (TypeDescr) ctx.refs.get(t), item, tmp;
         if (descr != null) {
             if (descr.alias == null)
-                descr.alias = getVarName(t, vars);
+                descr.alias = ctx.getVarName(t);
             return new TypeDescr(descr.alias);
         }
-        refs.put(t, descr = new TypeDescr(null));
-        Map defVars = null;
-        TypePattern def = null;
-        if (defs != null &&
-                (def = defs.match(t, defVars = new IdentityHashMap())) != null
-                && def.end != null) {
-            descr.name = def.end.typename;
-            if (def.end.defvars.length == 0)
-                return descr;
-            descr.type = MAP; // Parametric
-            Map param = new HashMap();
-            for (Iterator i = defVars.entrySet().iterator(); i.hasNext();) {
-                Map.Entry e = (Map.Entry) i.next();
-                param.put(e.getValue(), e.getKey());
-            }
-            for (int i = def.end.defvars.length; --i >= 0; ) {
-                t = (YType) param.get(Integer.valueOf(def.end.defvars[i]));
-                item = t != null ? prepare(t, defs, vars, refs)
-                                 : new TypeDescr("?");
-                item.prev = descr.value;
-                descr.value = item;
-            }
+        final YType tt = t;
+        descr = new TypeDescr(null);
+        int varcount = ctx.vars.size();
+        if (match(descr, tt, ctx))
             return descr;
-        }
+        ctx.refs.put(tt, descr);
         descr.type = type;
         YType[] param = t.param;
+        int n = 1;
         switch (type) {
             case FUN:
-                for (; t.type == FUN; param = t.param) {
-                    item = prepare(param[0], defs, vars, refs);
+                tmp = new TypeDescr(null);
+                do {
+                    param = t.param;
+                    item = prepare(param[0], ctx);
                     item.prev = descr.value;
                     descr.value = item;
                     t = param[1].deref();
-                }
-                (item = prepare(t, defs, vars, refs)).prev = descr.value;
-                descr.value = item;
+                } while (t.type == FUN ? !match(tmp, t, ctx)
+                                       : (tmp = prepare(t, ctx)) == null);
+                tmp.prev = descr.value;
+                descr.value = tmp;
                 break;
             case STRUCT:
             case VARIANT:
-                hdescr(descr, t, defs, vars, refs);
+                hdescr(descr, t, ctx);
                 t = t.param[0].deref();
                 if ((t.flags & FL_ERROR_IS_HERE) != 0)
-                    descr.alias = getVarName(t, vars);
+                    descr.alias = ctx.getVarName(t);
                 break;
             case MAP:
-                int n = 1;
                 YType p1 = param[1].deref();
                 YType p2 = param[2].deref();
                 if (p2.type == LIST_MARKER) {
                     descr.name = p1.type == NONE ? "list" : p1.type == NUM
                                     ? "array" : "list?";
+                    if ((p1.flags & FL_ERROR_IS_HERE) != 0)
+                        descr.name = descr.name.concat("*");
                 } else {
                     descr.name = p2.type == MAP_MARKER || p1.type != NUM
                                     && p1.type != VAR ? "hash" : "map";
+                    if ((p2.flags & FL_ERROR_IS_HERE) != 0)
+                        descr.name = descr.name.concat("*");
                     n = 2;
                 }
                 while (--n >= 0) {
-                    item = prepare(param[n], defs, vars, refs);
+                    item = prepare(param[n], ctx);
                     item.prev = descr.value;
                     descr.value = item;
                 }
                 break;
             default:
-                descr.name = "?" + type + '?';
-                break;
+                if (type < OPAQUE_TYPES) {
+                    descr.name = "?" + type + '?';
+                    break;
+                }
+                descr.type = MAP;
+                descr.name = t.requiredMembers.keySet().toString();
+                for (n = -1; ++n < param.length; ) {
+                    item = prepare(param[n], ctx);
+                    item.prev = descr.value;
+                    descr.value = item;
+                }
         }
+        // don't create ('foo is ...) when there is no free variables in ...
+        if (varcount == ctx.vars.size() && descr.alias == null)
+            ctx.refs.remove(tt);
         return descr;
     }
 }
@@ -406,8 +486,8 @@ class TypeWalk implements Comparable {
             tvars.put(t, p);
         }
         if (id == YetiType.STRUCT || id == YetiType.VARIANT) {
-            fieldMap = t.finalMembers != null ? t.finalMembers
-                                              : t.partialMembers;
+            fieldMap = t.allowedMembers != null ? t.allowedMembers
+                                              : t.requiredMembers;
             fields = (String[])
                 fieldMap.keySet().toArray(new String[fieldMap.size()]);
             Arrays.sort(fields);
@@ -484,11 +564,11 @@ class TypePattern {
             if (idx[i = idx.length - 1] != Integer.MAX_VALUE)
                 return null;
             if (var < 0)
-                typeVars.put(type, Integer.valueOf(var));
+                typeVars.put(type, new Integer(var));
             return next[i];
         }
         if (var < 0)
-            typeVars.put(type, Integer.valueOf(var));
+            typeVars.put(type, new Integer(var));
         TypePattern pat = next[i];
         if (pat.field == null) {
             YType[] param = type.param;
@@ -497,16 +577,16 @@ class TypePattern {
                     pat = pat.match(param[i], typeVars);
         } else {
             // TODO check final/partial if necessary
-            Map m = type.finalMembers;
+            Map m = type.allowedMembers;
             if (m == null)
-                m = type.partialMembers;
+                m = type.requiredMembers;
             i = m.size();
             while (--i >= 0 && pat != null) {
                 if (pat.field == null)
                     return null;
                 type = (YType) m.get(pat.field);
                 if (type != null &&
-                        type.field == YetiType.FIELD_MUTABLE == mutable) {
+                        type.field == YetiType.FIELD_MUTABLE == pat.mutable) {
                     pat = pat.match(type, typeVars);
                 } else {
                     pat = pat.next[pat.idx.length];
@@ -606,14 +686,17 @@ class TypePattern {
         return presult;
     }
 
-    static TypePattern toPattern(Scope scope) {
+    static TypePattern toPattern(Scope scope, boolean ignoreLocal) {
         Map typedefs = new HashMap();
-        for (; scope != null; scope = scope.outer)
-            if (scope.typeDef != null) {
-                Object old = typedefs.put(scope.name, scope.typeDef);
+        for (; scope != null; scope = scope.outer) {
+            YType[] def = scope.typedef(false);
+            if (def != null && (!ignoreLocal ||
+                                scope.name.charAt(0) != '_')) {
+                Object old = typedefs.put(scope.name, def);
                 if (old != null)
                     typedefs.put(scope.name, old);
             }
+        }
         return toPattern(typedefs);
     }
 /*
@@ -676,13 +759,13 @@ class TypePattern {
 
     public static void main(String[] _) {
         YType st = new YType(YetiType.STRUCT, null);
-        st.finalMembers = new HashMap();
-        st.finalMembers.put("close", YetiType.fun(YetiType.UNIT_TYPE, YetiType.UNIT_TYPE));
-        st.finalMembers.put("read", YetiType.fun(YetiType.A, YetiType.STR_TYPE));
+        st.allowedMembers = new HashMap();
+        st.allowedMembers.put("close", YetiType.fun(YetiType.UNIT_TYPE, YetiType.UNIT_TYPE));
+        st.allowedMembers.put("read", YetiType.fun(YetiType.A, YetiType.STR_TYPE));
         YType st2 = new YType(YetiType.STRUCT, null);
-        st2.finalMembers = new HashMap();
-        st2.finalMembers.put("close", YetiType.fun(YetiType.UNIT_TYPE, YetiType.UNIT_TYPE));
-        st2.finalMembers.put("write", YetiType.fun(YetiType.STR_TYPE, YetiType.UNIT_TYPE));
+        st2.allowedMembers = new HashMap();
+        st2.allowedMembers.put("close", YetiType.fun(YetiType.UNIT_TYPE, YetiType.UNIT_TYPE));
+        st2.allowedMembers.put("write", YetiType.fun(YetiType.STR_TYPE, YetiType.UNIT_TYPE));
         //YType[] types = {YetiType.CONS_TYPE, st};
         Map defs = new HashMap();
         defs.put("cons", new YType[] { YetiType.A, YetiType.CONS_TYPE });

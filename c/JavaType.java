@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java class type reader.
  *
- * Copyright (c) 2007,2008,2009 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,7 +31,7 @@
 package yeti.lang.compiler;
 
 import java.util.*;
-import yeti.renamed.asm3.*;
+import yeti.renamed.asmx.*;
 import java.io.IOException;
 import java.io.InputStream;
 import yeti.lang.Core;
@@ -42,7 +42,7 @@ class JavaClassNotFoundException extends Exception {
     }
 }
 
-class JavaTypeReader implements ClassVisitor, Opcodes {
+class JavaTypeReader extends ClassVisitor implements Opcodes {
     Map vars = new HashMap();
     Map fields = new HashMap();
     Map staticFields = new HashMap();
@@ -53,6 +53,10 @@ class JavaTypeReader implements ClassVisitor, Opcodes {
     String className;
     String[] interfaces;
     int access;
+
+    JavaTypeReader() {
+        super(ASM7);
+    }
 
     public void visit(int version, int access, String name, String signature,
                       String superName, String[] interfaces) {
@@ -428,8 +432,8 @@ class JavaType implements Cloneable {
 
     static void checkUnsafeCast(YetiParser.Node cast,
                                 YType from, YType to) {
-        if (from.type != YetiType.JAVA && from.type != YetiType.VAR &&
-            to.type != YetiType.JAVA) {
+        if (from.type != YetiType.JAVA && to.type != YetiType.JAVA &&
+                to.type != YetiType.JAVA_ARRAY) {
             throw new CompileException(cast,
                 "Illegal cast from " + from + " to " + to + 
                 " (neither side is java object)");
@@ -438,9 +442,15 @@ class JavaType implements Cloneable {
         if (src == null)
             throw new CompileException(cast, "Illegal cast from " + from);
         JavaType dst = getClass(to);
+        if (from.type == YetiType.VAR && (dst == null ||
+                dst.description != "Ljava/lang/Object;")) {
+            from.type = YetiType.JAVA;
+            from.param = YetiType.NO_PARAM;
+            from.javaType = fromDescription("Ljava/lang/Object;");
+        }
         if (dst == null) {
             if (src.description == "Ljava/lang/Object;" &&
-                    to.deref().type == YetiType.JAVA_ARRAY)
+                    to.type == YetiType.JAVA_ARRAY)
                 return;
             throw new CompileException(cast, "Illegal cast to " + to);
         }
@@ -456,20 +466,6 @@ class JavaType implements Cloneable {
             }
         } catch (JavaClassNotFoundException ex) {
             throw new CompileException(cast, ex);
-        }
-    }
-
-    static void checkThrowable(YetiParser.Node node, YType t) {
-        t = t.deref();
-        try {
-            if (t.type != YetiType.JAVA ||
-                JavaType.fromDescription("Ljava/lang/Throwable;")
-                    .isAssignable(t.javaType) == -1) {
-                throw new CompileException(node,
-                                "Not a Throwable instance (" + t + ")");
-            }
-        } catch (JavaClassNotFoundException ex) {
-            throw new CompileException(node, ex);
         }
     }
 
@@ -525,7 +521,8 @@ class JavaType implements Cloneable {
             resolved = true;
             return;
         }
-        JavaTypeReader t = ClassFinder.get().readClass(className());
+        JavaTypeReader t = ((Compiler) Compiler.currentCompiler.get())
+            .classPath.readClass(className());
         if (t == null) {
             throw new JavaClassNotFoundException(dottedName());
         }
@@ -594,8 +591,6 @@ class JavaType implements Cloneable {
         "Ljava/math/BigDecimal;"
     };
 
-    //static final String[] NUMBER_X = { "B", "S", "F", "D", "I", "J", "i", "d" };
-
     int isAssignable(JavaType from) throws JavaClassNotFoundException {
         from.resolve();
         if (this == from) {
@@ -623,7 +618,7 @@ class JavaType implements Cloneable {
         { YetiType.BOOL_TYPE, YetiType.STR_TYPE, YetiType.NUM_TYPE };
 
     // -1 not assignable. 0 - perfect match. > 0 convertable.
-    int isAssignableJT(YType to, YType from, boolean smart)
+    private int isAssignableJT(YType to, YType from, boolean smart)
             throws JavaClassNotFoundException, TypeException {
         int ass;
         if (from.type != YetiType.JAVA && description == "Ljava/lang/Object;") {
@@ -701,7 +696,7 @@ class JavaType implements Cloneable {
         return description == "Ljava/lang/Object;" ? 10 : -1;
     }
 
-    static int isAssignable(YType to, YType from, boolean smart)
+    private static int isAssignable(YType to, YType from, boolean smart)
             throws JavaClassNotFoundException, TypeException {
         int ass;
 //        System.err.println(" --> isAssignable(" + to + ", " + from + ")");
@@ -747,8 +742,8 @@ class JavaType implements Cloneable {
         }
     }
 
-    static boolean isSafeCast(YetiParser.Node where,
-                              YType to, YType from) {
+    static boolean isSafeCast(Scope scope, YetiParser.Node where,
+                              YType to, YType from, boolean explicit) {
         to = to.deref();
         from = from.deref();
         // automatic array wrapping
@@ -757,14 +752,16 @@ class JavaType implements Cloneable {
             ((mapKind = to.param[2].deref()).type == YetiType.LIST_MARKER ||
              mapKind.type == YetiType.VAR)) {
             YType fp = from.param[0].deref();
-            String fromDesc = fp.javaType.description;
-            if (fromDesc == "C")
-                return false;
             YType tp = to.param[0].deref();
             try {
-                if (fromDesc.length() == 1) {
+                if (fp.javaType != null &&
+                    fp.javaType.description.length() == 1) {
+                    char fromPrimitive = fp.javaType.description.charAt(0);
                     YetiType.unify(to.param[1], YetiType.NO_TYPE);
-                    YetiType.unify(to.param[0], YetiType.NUM_TYPE);
+                    YetiType.unify(to.param[0],
+                        fromPrimitive == 'Z' ? YetiType.BOOL_TYPE :
+                        fromPrimitive == 'C' ? YetiType.STR_TYPE :
+                        YetiType.NUM_TYPE);
                 } else if (tp.type == YetiType.VAR) {
                     if (fp != tp)
                         YetiType.unifyToVar(tp, fp);
@@ -778,11 +775,22 @@ class JavaType implements Cloneable {
             mapKind.param = YetiType.NO_PARAM;
             YType index = to.param[1].deref();
             if (index.type == YetiType.VAR) {
-                index.type = YetiType.NUM;
+                index.type = tp.type == YetiType.STR
+                                ? YetiType.NONE : YetiType.NUM;
                 index.param = YetiType.NO_PARAM;
+            }
+            if (index.type == YetiType.NUM && tp.type == YetiType.STR) {
+                scope.ctx.compiler.warn(new CompileException(where,
+                    "Cast `as array<string>' is dangerous and deprecated." +
+                    "\n    Please use either `as list<string>' or" +
+                    " `as array<~String>'"));
             }
             return true;
         }
+        if (to.type == YetiType.JAVA && to.javaType.description.length() == 1)
+            return false;
+        if (explicit)
+            return isAssignable(where, to, from, true) >= 0;
         boolean smart = true;
         boolean mayExact = false;
         while (from.type == YetiType.MAP &&

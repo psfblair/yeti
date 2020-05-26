@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2007 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,6 +30,8 @@
  */
 package yeti.lang;
 
+import java.io.OutputStream;
+
 /** Yeti core library - List. */
 public abstract class AIter {
     /**
@@ -43,7 +45,16 @@ public abstract class AIter {
      */
     public abstract AIter next();
 
+    public AIter dup() {
+        return this;
+    }
+
     public boolean isEmpty() {
         return false;
+    }
+
+    AIter write(OutputStream stream) throws java.io.IOException {
+        stream.write(((Number) first()).intValue());
+        return next();
     }
 }

@@ -2,7 +2,7 @@
 
 /**
  * Class definition analyzer.
- * Copyright (c) 2008,2009 Madis Janson
+ * Copyright (c) 2008-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +32,7 @@ package yeti.lang.compiler;
 
 import java.util.List;
 import java.util.ArrayList;
-import yeti.renamed.asm3.Opcodes;
+import yeti.renamed.asmx.Opcodes;
 
 final class MethodDesc extends YetiType {
     Binder[] arguments;
@@ -167,14 +167,14 @@ final class MethodDesc extends YetiType {
         Scope scope = new Scope(scope_[0], null, null);
         String className = cl.expr[0].sym();
         String packageName = scope.ctx.packageName;
-        CompileCtx cctx = CompileCtx.current();
+        Compiler cctx = scope.ctx.compiler;
         if (!topLevel) {
             className = cctx.createClassName(null, scope.ctx.className, className);
         } else if (packageName != null && packageName.length() != 0) {
             className = packageName + '/' + className;
         }
-        cctx.addClass(className, null);
-        JavaClass c = new JavaClass(className, topLevel);
+        cctx.addClass(className, null, cl.line);
+        JavaClass c = new JavaClass(className, topLevel, cl.line);
         scope.closure = c; // to proxy super-class closures
 
         ClassBinding parentClass = null;

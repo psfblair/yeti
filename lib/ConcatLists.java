@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,11 +30,14 @@
  */
 package yeti.lang;
 
+import java.io.IOException;
+import java.io.OutputStream;
+
 /** Yeti core library - Concat list. */
 final class ConcatLists extends LList {
-    private boolean mappedRest;
-    private AIter src;
-    private AIter tail;
+    private AList rest;
+    private AIter src;  // current list?<'a>
+    private AIter tail; // list<list?<'a>>
 
     public ConcatLists(AIter src, AIter rest) {
         super(src.first(), null);
@@ -43,23 +46,46 @@ final class ConcatLists extends LList {
     }
 
     public synchronized AList rest() {
-        if (!mappedRest) {
+        if (src != null) {
             AIter i = src.next();
             src = null;
+            // current done? -> rest is concatenation of tail list of lists
+            //  more current -> rest contains the current
             rest = i == null ? concat(tail) : new ConcatLists(i, tail);
             tail = null;
-            mappedRest = true;
         }
         return rest;
     }
 
+    synchronized AIter write(OutputStream out) throws IOException {
+        if (src == null)
+            return super.write(out);
+        AIter i = src.dup();
+        while (i != null)
+            i = i.write(out);
+        if (tail != null) {
+            AIter lists = tail.dup();
+            do {
+                i = (AIter) lists.first();
+                while (i != null)
+                    i = i.write(out);
+                lists = lists.next();
+            } while (lists != null);
+        }
+        return null;
+    }
+
+    // src is list<list?<'a>>
     public static AList concat(AIter src) {
+        // find first non-empty list in the src list of lists
         while (src != null) {
             AList h = (AList) src.first();
             src = src.next();
+            // If found make concat-list mirroring it,
+            // with tail src to use when it's finished.
             if (h != null && !h.isEmpty())
                 return src == null ? h : new ConcatLists(h, src);
         }
-        return null;
+        return null; // no, all empty
     }
 }

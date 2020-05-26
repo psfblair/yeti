@@ -32,7 +32,7 @@
  */
 package yeti.lang.compiler;
 
-import yeti.renamed.asm3.Opcodes;
+import yeti.renamed.asmx.Opcodes;
 import java.util.*;
 
 // Java source tree node, can be class or method or field.
@@ -72,6 +72,7 @@ class JavaSource implements Opcodes {
         }
         char c, s[] = this.s;
         int p = this.p - 1, e = this.e;
+        boolean annotation = false;
         for (;;) {
             // skip whitespace and comments
             while (++p < e && (c = s[p]) >= '\000' && c <= ' ')
@@ -107,15 +108,17 @@ class JavaSource implements Opcodes {
                     ++level;
                 continue;
             }
-            if (level == 0 || level == -1 && c != '(') {
+            if (level == 0 && (!annotation || c != '(')) {
                 if (c != '@')
                     break;
                 while (++p < e && s[p] >= '0'); // skip name
-                level = -1;
+                --p;
+                annotation = true;
             } else if (c == '(') {
                 --level;
             } else if (c == ')') {
                 ++level;
+                annotation = false;
             }
         }
         int f = p, l;
@@ -131,10 +134,11 @@ class JavaSource implements Opcodes {
         return new String(s, f, p - f);
     }
 
-    void expect(String expect, String id) {
+    void expect(String expect, String id, String at, String name) {
         if (!expect.equals(id)) {
             CompileException e = new CompileException(line, 0, "Expected `" +
-                    expect + (id == null ? "EOF" : "', not `" + id + '\''));
+                  expect + (id == null ? "EOF" : "', not `" + id + '\'') + at
+                  + (name == null ? "" : " (" + name + ")"));
             e.fn = fn;
             throw e;
         }
@@ -160,7 +164,18 @@ class JavaSource implements Opcodes {
         String id = get(0), sep = null;
         if (id == "{")
             return id;
-        while (id != null && (sep = get(0)) == "." && mode != 1) {
+        while (id != null) {
+            sep = get(0);
+            if (sep == "<" && mode > 1) {
+                int level = 1;
+                String x;
+                while ((x = get(0)) != null && (x != ">" || --level > 0))
+                    if (x == "<")
+                        ++level;
+                sep = get(0);
+            }
+            if (sep != "." || mode == 1)
+                break;
             if (result == null)
                 result = new StringBuffer(id);
             result.append('/');
@@ -168,20 +183,12 @@ class JavaSource implements Opcodes {
                 result.append(id);
         }
         String type = result == null ? id : result.toString();
-        if (mode != 0) {
-            if (sep == "<") {
-                int level = 1;
-                while ((id = get(0)) != null && (id != ">" || --level > 0))
-                    if (id == "<")
-                        ++level;
-                sep = get(0);
-            }
+        if (mode != 0)
             while (sep == "[" && mode != 2) {
-                expect("]", get(0));
+                expect("]", get(0), " after type name", type);
                 type = "[".concat(type);
                 sep = get(0);
             }
-        }
         lookahead = sep;
         return type;
     }
@@ -225,10 +232,11 @@ class JavaSource implements Opcodes {
                 if ((id = get(0)) != null)
                     l.add(type);
             } while (id == ",");
-            expect(")", id);
+            expect(")", id, " after method argument list",
+                   n == null ? null : n.name);
             if (n != null)
                 n.argv = (String[]) l.toArray(new String[l.size()]);
-            ++method;
+            method = 1;
         } else if (id != "=") {
             return id;
         }
@@ -259,18 +267,23 @@ class JavaSource implements Opcodes {
         cl.name = outer != null ? outer + '$' + id :
                     packageName.length() != 0 ? packageName + '/' + id : id;
         id = get(0);
+        boolean iface_extends = false;
         if ("extends".equals(id)) {
-            cl.type = type(2);
-            id = get(0);
+            if ((modifiers & ACC_INTERFACE) == 0) {
+                cl.type = type(2);
+                id = get(0);
+            } else {
+                iface_extends = true;
+            }
         }
-        if ("implements".equals(id)) {
+        if (iface_extends || "implements".equals(id)) {
             List impl = new ArrayList();
             do {
                 impl.add(type(2));
             } while ((id = get(0)) == ",");
             cl.argv = (String[]) impl.toArray(new String[impl.size()]);
         }
-        expect("{", id);
+        expect("{", id, " for the class definition body", cl.name);
         while ((id = readClass(cl.name, modifiers = modifiers())) != "}") {
             if (id == null)
                 return null;

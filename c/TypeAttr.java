@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,7 +31,7 @@
 package yeti.lang.compiler;
 
 import java.util.*;
-import yeti.renamed.asm3.*;
+import yeti.renamed.asmx.*;
 import yeti.lang.Tag;
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,10 +46,13 @@ import java.io.InputStream;
  *      primitives (same as YType.type UNIT - MAP_MARKER)
  * 09 x.. y.. - Function x -> y
  * 0A e.. i.. t.. - MAP<e,i,t>
- * 0B <partialMembers...> FF <finalMembers...> FF - Struct
- * 0C <partialMembers...> FF <finalMembers...> FF - Variant
+ * 0B <requiredMembers...> FF <allowedMembers...> FF - Struct
+ * 0C <requiredMembers...> FF <allowedMembers...> FF - Variant
+ * 0C F9 ... - Variant with FL_ANY_CASE flag
+ * (0B | 0C) F9? F8 ... - Variant or struct with FL_FLEX_TYPEDEF flag
  * 0D XX XX <param...> FF - java type
  * 0E e.. FF - java array e[]
+ * FA XX XX <parameters...> FF - opaque type instance (X is "module:name")
  * FB XX XX - non-free type variable XXXX
  * FC ... - mutable field type
  * FD ... - the following type variable is ORDERED
@@ -64,29 +67,35 @@ import java.io.InputStream;
  *  'F' fieldName 00 function-class 00
  *  'P' fieldName 00 - property (field mapping as null)
  */
-class YetiTypeAttr extends Attribute {
+class TypeAttr extends Attribute {
     static final byte END = -1;
     static final byte REF = -2;
     static final byte ORDERED = -3;
     static final byte MUTABLE = -4;
     static final byte TAINTED = -5;
+    static final byte OPAQUE  = -6;
+    static final byte ANYCASE = -7;
+    static final byte SMART   = -8;
 
-    ModuleType moduleType;
+    final ModuleType moduleType;
     private ByteVector encoded;
+    final Compiler compiler;
 
-    YetiTypeAttr(ModuleType mt) {
+    TypeAttr(ModuleType mt, Compiler ctx) {
         super("YetiModuleType");
-        this.moduleType = mt;
+        moduleType = mt;
+        compiler = ctx;
     }
 
     private static final class EncodeType {
         ClassWriter cw;
         ByteVector buf = new ByteVector();
-        Map refs = new HashMap();
-        Map vars = new HashMap();
+        Map refs = new IdentityHashMap();
+        Map vars = new IdentityHashMap();
+        Map opaque = new HashMap();
 
         void writeMap(Map m) {
-            if (m != null) {
+            if (m != null)
                 for (Iterator i = m.entrySet().iterator(); i.hasNext();) {
                     Map.Entry e = (Map.Entry) i.next();
                     YType t = (YType) e.getValue();
@@ -96,14 +105,12 @@ class YetiTypeAttr extends Attribute {
                     int name = cw.newUTF8((String) e.getKey());
                     buf.putShort(name);
                 }
-            }
             buf.putByte(END);
         }
 
         void writeArray(YType[] param) {
-            for (int i = 0; i < param.length; ++i) {
+            for (int i = 0; i < param.length; ++i)
                 write(param[i]);
-            }
             buf.putByte(END);
         }
 
@@ -131,14 +138,22 @@ class YetiTypeAttr extends Attribute {
             }
             Integer id = (Integer) refs.get(type);
             if (id != null) {
-                if (id.intValue() > 0x7fff) {
+                if (id.intValue() > 0x7fff)
                     throw new RuntimeException("Too many type parts");
-                }
                 buf.putByte(REF);
                 buf.putShort(id.intValue());
                 return;
             }
             refs.put(type, new Integer(refs.size()));
+            if (type.type >= YetiType.OPAQUE_TYPES) {
+                Object idstr = opaque.get(new Integer(type.type));
+                if (idstr == null)
+                    idstr = type.requiredMembers.keySet().toArray()[0];
+                buf.putByte(OPAQUE);
+                buf.putShort(cw.newUTF8(idstr.toString()));
+                writeArray(type.param);
+                return;
+            }
             buf.putByte(type.type);
             if (type.type == YetiType.FUN) {
                 write(type.param[0]);
@@ -147,8 +162,19 @@ class YetiTypeAttr extends Attribute {
                 writeArray(type.param);
             } else if (type.type == YetiType.STRUCT ||
                        type.type == YetiType.VARIANT) {
-                writeMap(type.finalMembers);
-                writeMap(type.partialMembers);
+                if ((type.allowedMembers == null || type.allowedMembers.isEmpty())
+                    && (type.requiredMembers == null ||
+                        type.requiredMembers.isEmpty()))
+                    throw new CompileException(0, 0,
+                                type.type == YetiType.STRUCT
+                                ? "Internal error: empty struct"
+                                : "Internal error: empty variant");
+                if ((type.flags & YetiType.FL_ANY_CASE) != 0)
+                    buf.putByte(ANYCASE);
+                if ((type.flags & YetiType.FL_FLEX_TYPEDEF) != 0)
+                    buf.putByte(SMART);
+                writeMap(type.allowedMembers);
+                writeMap(type.requiredMembers);
             } else if (type.type == YetiType.JAVA) {
                 buf.putShort(cw.newUTF8(type.javaType.description));
                 writeArray(type.param);
@@ -167,34 +193,27 @@ class YetiTypeAttr extends Attribute {
             }
             buf.putByte(END);
         }
-
-        void writeDirectFields(Map fields) {
-            buf.putShort(fields.size());
-            Iterator i = fields.entrySet().iterator();
-            while (i.hasNext()) {
-                Map.Entry e = (Map.Entry) i.next();
-                Object v = e.getValue();
-                buf.putShort(cw.newUTF8((String) e.getKey()));
-                buf.putShort(cw.newUTF8(v == null ? "" : (String) v));
-            }
-        }
     }
 
     private static final class DecodeType {
         private static final int VAR_DEPTH = 1;
-        ClassReader cr;
-        byte[] in;
-        char[] buf;
-        int p, end;
-        Map vars = new HashMap();
-        List refs = new ArrayList();
+        final ClassReader cr;
+        final byte[] in;
+        final char[] buf;
+        int p;
+        final int end;
+        final Map vars = new HashMap();
+        final List refs = new ArrayList();
+        final Map opaqueTypes;
 
-        DecodeType(ClassReader cr, int off, int len, char[] buf) {
+        DecodeType(ClassReader cr, int off, int len, char[] buf,
+                   Map opaqueTypes) {
             this.cr = cr;
             in = cr.b;
             p = off;
             end = p + len;
             this.buf = buf;
+            this.opaqueTypes = opaqueTypes;
         }
 
         Map readMap() {
@@ -202,10 +221,10 @@ class YetiTypeAttr extends Attribute {
                 ++p;
                 return null;
             }
-            HashMap res = new HashMap();
+            Map res = new IdentityHashMap();
             while (in[p] != END) {
                 YType t = read();
-                res.put(cr.readUTF8(p, buf), t);
+                res.put(cr.readUTF8(p, buf).intern(), t);
                 p += 2;
             }
             ++p;
@@ -214,9 +233,8 @@ class YetiTypeAttr extends Attribute {
 
         YType[] readArray() {
             List param = new ArrayList();
-            while (in[p] != END) {
+            while (in[p] != END)
                 param.add(read());
-            }
             ++p;
             return (YType[]) param.toArray(new YType[param.size()]);
         }
@@ -225,9 +243,8 @@ class YetiTypeAttr extends Attribute {
             YType t;
             int tv;
 
-            if (p >= end) {
+            if (p >= end)
                 throw new RuntimeException("Invalid type description");
-            }
             switch (tv = in[p++]) {
             case YetiType.VAR:
             case TAINTED: {
@@ -246,18 +263,15 @@ class YetiTypeAttr extends Attribute {
             case REF: {
                 int v = cr.readUnsignedShort(p);
                 p += 2;
-                if (refs.size() <= v) {
+                if (refs.size() <= v)
                     throw new RuntimeException("Illegal type reference");
-                }
                 return (YType) refs.get(v);
             }
             case MUTABLE:
                 return YetiType.fieldRef(1, read(), YetiType.FIELD_MUTABLE);
             }
-            if (tv < YetiType.PRIMITIVES.length &&
-                (t = YetiType.PRIMITIVES[tv]) != null) {
-                return t;
-            }
+            if (tv < YetiType.PRIMITIVES.length && tv > 0)
+                return YetiType.PRIMITIVES[tv];
             t = new YType(tv, null);
             refs.add(t);
             if (t.type == YetiType.FUN) {
@@ -267,16 +281,25 @@ class YetiTypeAttr extends Attribute {
             } else if (tv == YetiType.MAP) {
                 t.param = readArray();
             } else if (tv == YetiType.STRUCT || tv == YetiType.VARIANT) {
-                t.finalMembers = readMap();
-                t.partialMembers = readMap();
+                if (in[p] == ANYCASE) {
+                    t.flags |= YetiType.FL_ANY_CASE;
+                    ++p;
+                }
+                if (in[p] == SMART) {
+                    t.flags |= YetiType.FL_FLEX_TYPEDEF;
+                    ++p;
+                }
+                t.allowedMembers = readMap();
+                t.requiredMembers = readMap();
                 Map param;
-                if (t.finalMembers == null) {
-                    param = t.partialMembers;
-                } else if (t.partialMembers == null) {
-                    param = t.finalMembers;
+                if (t.allowedMembers == null) {
+                    if ((param = t.requiredMembers) == null)
+                        param = new IdentityHashMap();
+                } else if (t.requiredMembers == null) {
+                    param = t.allowedMembers;
                 } else {
-                    param = new HashMap(t.finalMembers);
-                    param.putAll(t.partialMembers);
+                    param = new IdentityHashMap(t.allowedMembers);
+                    param.putAll(t.requiredMembers);
                 }
                 t.param = new YType[param.size() + 1];
                 t.param[0] = new YType(VAR_DEPTH);
@@ -289,6 +312,21 @@ class YetiTypeAttr extends Attribute {
                 t.param = readArray();
             } else if (tv == YetiType.JAVA_ARRAY) {
                 t.param = new YType[] { read() };
+            } else if (tv == OPAQUE) {
+                String idstr = cr.readUTF8(p, buf);
+                p += 2;
+                synchronized (opaqueTypes) {
+                    YType old = (YType) opaqueTypes.get(idstr);
+                    if (old != null) {
+                        t.type = old.type;
+                    } else {
+                        t.type = opaqueTypes.size() + YetiType.OPAQUE_TYPES;
+                        opaqueTypes.put(idstr, t);
+                    }
+                }
+                t.requiredMembers =
+                    Collections.singletonMap(idstr, YetiType.NO_TYPE);
+                t.param = readArray();
             } else {
                 throw new RuntimeException("Unknown type id: " + tv);
             }
@@ -305,31 +343,23 @@ class YetiTypeAttr extends Attribute {
             ++p;
             return result;
         }
-
-        Map readDirectFields() {
-            int n = cr.readUnsignedShort(p);
-            Map result = new HashMap(n);
-            for (;;) {
-                p += 2;
-                if (--n < 0)
-                    return result;
-                String name = cr.readUTF8(p, buf);
-                String fun = cr.readUTF8(p += 2, buf);
-                result.put(name, fun.length() == 0 ? null : fun);
-            }
-        }
     }
 
     protected Attribute read(ClassReader cr, int off, int len, char[] buf,
                              int codeOff, Label[] labels) {
-        if (cr.b[off] != 0) {
+        int hdr = 3;
+        switch (cr.b[off]) {
+        case 0: hdr = 1; // version 0 has only version in header
+        case 1: break;
+        default:
             throw new RuntimeException("Unknown type encoding: " + cr.b[off]);
         }
-        DecodeType decoder = new DecodeType(cr, off + 1, len - 1, buf);
+        DecodeType decoder =
+            new DecodeType(cr, off + hdr, len - hdr, buf, compiler.opaqueTypes);
         YType t = decoder.read();
         Map typeDefs = decoder.readTypeDefs();
-        return new YetiTypeAttr(new ModuleType(t, typeDefs,
-                                               decoder.readDirectFields()));
+        return new TypeAttr(new ModuleType(t, typeDefs, hdr != 1, -1),
+                            compiler);
     }
 
     protected ByteVector write(ClassWriter cw, byte[] code, int len,
@@ -338,55 +368,71 @@ class YetiTypeAttr extends Attribute {
             return encoded;
         }
         EncodeType enc = new EncodeType();
+        Iterator i = moduleType.typeDefs.entrySet().iterator();
+        while (i.hasNext()) {
+            Map.Entry e = (Map.Entry) i.next();
+            YType[] def = (YType[]) e.getValue();
+            YType t = def[def.length - 1];
+            if (t.type >= YetiType.OPAQUE_TYPES && t.requiredMembers == null)
+                enc.opaque.put(new Integer(t.type),
+                               moduleType.name + ':' + e.getKey());
+        }
         enc.cw = cw;
-        enc.buf.putByte(0); // encoding version
+        enc.buf.putByte(1); // encoding version
+        enc.buf.putShort(0);
         enc.write(moduleType.type);
         enc.writeTypeDefs(moduleType.typeDefs);
-        enc.writeDirectFields(moduleType.directFields);
         return encoded = enc.buf;
     }
-
 }
 
-class ModuleType {
-    YType type;
-    Map typeDefs;
-    Map directFields;
+class ModuleType extends YetiParser.Node {
+    final YType type;
+    final Map typeDefs;
+    final boolean directFields;
     Scope typeScope;
     String topDoc;
     String name;
     boolean deprecated;
+    boolean fromClass;
+    boolean hasSource;
+    long lastModified;
     private YType[] free;
 
-    ModuleType(YType type, Map typeDefs, Map directFields) {
-        this.type = type;
+    ModuleType(YType type, Map typeDefs, boolean directFields, int depth) {
         this.typeDefs = typeDefs;
         this.directFields = directFields;
+        this.type = copy(depth, type);
     }
 
-    YType copy(int depth) {
+    YType copy(int depth, YType t) {
+        if (t == null)
+            t = type;
         if (depth == -1)
-            return type;
+            return t;
         if (free == null) {
             List freeVars = new ArrayList();
-            YetiType.getFreeVar(freeVars, freeVars, type,
-                                YetiType.RESTRICT_POLY, -1);
+            YetiType.getAllTypeVar(freeVars, null, t, false);
             free = (YType[]) freeVars.toArray(new YType[freeVars.size()]);
         }
-        return YetiType.copyType(type, YetiType.createFreeVars(free, depth),
-                                 new HashMap());
+        return YetiType.copyType(t, YetiType.createFreeVars(free, depth),
+                                 new IdentityHashMap());
     }
 
     Tag yetiType() {
         return TypeDescr.yetiType(type, typeScope != null
-                ? TypePattern.toPattern(typeScope)
-                : TypePattern.toPattern(typeDefs));
+                ? TypePattern.toPattern(typeScope, true)
+                : TypePattern.toPattern(typeDefs), null);
     }
 }
 
-class YetiTypeVisitor implements ClassVisitor {
-    YetiTypeAttr typeAttr;
+class YetiTypeVisitor extends ClassVisitor {
+    TypeAttr typeAttr;
     private boolean deprecated;
+
+    YetiTypeVisitor() {
+        super(Opcodes.ASM7);
+    }
 
     public void visit(int version, int access, String name, String signature,
                       String superName, String[] interfaces) {
@@ -402,11 +448,10 @@ class YetiTypeVisitor implements ClassVisitor {
 
     public void visitAttribute(Attribute attr) {
         if (attr.type == "YetiModuleType") {
-            if (typeAttr != null) {
+            if (typeAttr != null)
                 throw new RuntimeException(
                     "Multiple YetiModuleType attributes are forbidden");
-            }
-            typeAttr = (YetiTypeAttr) attr;
+            typeAttr = (TypeAttr) attr;
         }
     }
 
@@ -430,51 +475,60 @@ class YetiTypeVisitor implements ClassVisitor {
     public void visitSource(String source, String debug) {
     }
 
-    static ModuleType readType(ClassReader reader) {
+    static ModuleType readType(Compiler compiler, InputStream in)
+            throws IOException {
         YetiTypeVisitor visitor = new YetiTypeVisitor();
-        reader.accept(visitor, new Attribute[] { new YetiTypeAttr(null) },
+        ClassReader reader = new ClassReader(in);
+        reader.accept(visitor, new Attribute[] { new TypeAttr(null, compiler) },
                       ClassReader.SKIP_CODE | ClassReader.SKIP_FRAMES);
+        in.close();
         if (visitor.typeAttr == null)
             return null;
         ModuleType mt = visitor.typeAttr.moduleType;
         if (mt != null)
             mt.deprecated = visitor.deprecated;
+        mt.name = reader.getClassName();
+        mt.fromClass = true;
         return mt;
     }
 
-    static ModuleType getType(YetiParser.Node node, String name,
-                              boolean bySourcePath) {
-        CompileCtx ctx = CompileCtx.current();
-        ModuleType t = (ModuleType) ctx.types.get(name);
+    static ModuleType getType(Compiler ctx, YetiParser.Node node,
+                              String name, boolean byPath) {
+        final boolean bySourcePath = false;
+        final String cname = name.toLowerCase();
+        ModuleType t = (ModuleType) ctx.types.get(cname);
         if (t != null)
             return t;
-        String source = name;
-        InputStream in = null;
-        if (!bySourcePath) {
-            source += ".yeti";
-            in = ClassFinder.get().findClass(name + ".class");
-        }
         try {
-            if (in == null) {
-                //System.err.println("|" + name + "|source=" + source + "|" + bySourcePath);
-                t = (ModuleType) ctx.types.get(ctx.compile(source, 0));
-                if (t == null)
-                    throw new Exception("Could not compile `" + name
-                                      + "' to a module");
-            } else {
-                t = readType(new ClassReader(in));
-                in.close();
-                if (t == null)
-                    throw new Exception("`" + name + "' is not a yeti module");
-                t.name = name;
+            int flags = byPath ? Compiler.CF_FORCE_COMPILE
+                               : Compiler.CF_RESOLVE_MODULE;
+            if (node == null && !byPath) {
+                t = ctx.moduleType(cname);
+                if (t != null)
+                    return t;
+                flags |= Compiler.CF_IGNORE_CLASSPATH;
             }
-            ctx.types.put(name, t);
+            t = (ModuleType) ctx.types.get(ctx.compile(name, null,
+                    flags | Compiler.CF_EXPECT_MODULE).name);
+            if (t == null)
+                throw new CompileException(node,
+                            "Could not compile `" + name + "' to a module");
+            if (!byPath && !cname.equals(t.name))
+                throw new CompileException(node, "Found " +
+                            t.name.replace('/', '.') +
+                            " instead of " + name.replace('/', '.'));
+            if (!t.directFields)
+                ctx.warn(new CompileException(node, "The `" +
+                    t.name.replace('/', '.') + "' module is compiled " +
+                    "with pre-0.9.8 version\n    of Yeti compiler and " +
+                    "might not work with newer standard library."));
             return t;
         } catch (CompileException ex) {
-            if (ex.line == 0) {
-                ex.line = node.line;
-                ex.col = node.col;
-            }
+            if (ex.line == 0)
+                if (node != null) {
+                    ex.line = node.line;
+                    ex.col = node.col;
+                }
             throw ex;
         } catch (RuntimeException ex) {
             throw ex;

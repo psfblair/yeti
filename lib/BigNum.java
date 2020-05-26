@@ -44,8 +44,8 @@ public final class BigNum extends Num {
         v = num;
     }
 
-    public BigNum(String num) {
-        v = new BigInteger(num);
+    public BigNum(String num, int radix) {
+        v = new BigInteger(num, radix);
     }
 
     public Num add(Num num) {
@@ -226,6 +226,10 @@ public final class BigNum extends Num {
 
     public String toString() {
         return v.toString();
+    }
+
+    public String toString(int radix, int format) {
+        return v.toString(radix);
     }
 
     public int hashCode() {

@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2008,2009 Madis Janson
+ * Copyright (c) 2008-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,9 +34,16 @@ import java.io.Serializable;
 
 final class RangeIter extends AIter implements Serializable {
     Num n;
-    Num last;
-    AList rest;
-    int inc;
+    final Num last;
+    final AList rest;
+    final int inc;
+
+    RangeIter(Num n, Num last, AList rest, int inc) {
+        this.n = n;
+        this.last = last;
+        this.rest = rest;
+        this.inc = inc;
+    }
 
     public Object first() {
         return n;
@@ -45,19 +52,31 @@ final class RangeIter extends AIter implements Serializable {
     public AIter next() {
         return (n = n.add(inc)).compareTo(last) * inc > 0 ? (AIter) rest : this;
     }
+
+    public AIter dup() {
+        return new RangeIter(n, last, rest, inc);
+    }
 }
 
 /** Yeti core library - List. */
 public final class ListRange extends AList implements Serializable {
-    Num first;
-    Num last;
-    AList rest;
-    int inc = 1;
+    final Num first;
+    final Num last;
+    final AList rest;
+    final int inc;
 
     private ListRange(Num first, Num last, AList rest) {
         this.first = first;
         this.last  = last;
         this.rest  = rest;
+        this.inc = 1;
+    }
+
+    private ListRange(Num first, Num last, AList rest, int inc) {
+        this.first = first;
+        this.last  = last;
+        this.rest  = rest;
+        this.inc = inc;
     }
 
     public static AList range(Object first, Object last, AList rest) {
@@ -74,21 +93,42 @@ public final class ListRange extends AList implements Serializable {
         Num n;
         if ((n = first.add(inc)).compareTo(last) * inc > 0)
             return rest;
-        ListRange r = new ListRange(n, last, rest);
-        r.inc = inc;
-        return r;
+        return new ListRange(n, last, rest, inc);
     }
 
     public AIter next() {
         Num n = first.add(inc);
         if (n.compareTo(last) * inc > 0)
             return rest;
-        RangeIter i = new RangeIter();
-        i.n = n;
-        i.last = last;
-        i.rest = rest;
-        i.inc = inc;
-        return i;
+        return new RangeIter(n, last, rest, inc);
+    }
+
+    public AList take(int from, int count) {
+        Num n = first;
+        if (count == 0)
+            return null;
+        if (from > 0) {
+            n = n.add(inc * from);
+            if (n.compareTo(last) * inc > 0) {
+                if (rest == null)
+                    return null;
+                return rest.take(from - (last.sub(first).intValue()*inc + 1), count);
+            }
+        }
+        AList tail = null;
+        Num last_;
+        if (count < 0) {
+            last_ = last;
+            tail = rest;
+        } else {
+            last_ = n.add(inc * (count - 1));
+            if (last_.compareTo(last) * inc > 0) { // last_ > last -> tail remains
+                if (rest != null)
+                    tail = rest.take(0, last_.sub(last).intValue() * inc);
+                last_ = last;
+            }
+        }
+        return new ListRange(n, last_, tail, inc);
     }
 
     public int hashCode() {
@@ -117,27 +157,6 @@ public final class ListRange extends AList implements Serializable {
         return i == null && j == null;
     }
 
-    public String toString() {
-        StringBuffer buf = new StringBuffer("[");
-        boolean f = true;
-        for (Num i = first; i.compareTo(last) * inc <= 0; i = i.add(inc)) {
-            if (f)
-                f = false;
-            else
-                buf.append(',');
-            buf.append(i);
-        }
-        for (AIter i = rest; i != null; i = i.next()) {
-            if (f)
-                f = false;
-            else
-                buf.append(',');
-            buf.append(Core.show(i.first()));
-        }
-        buf.append(']');
-        return buf.toString();
-    }
-
     public int compareTo(Object obj) {
         AIter i = this, j = (AIter) obj;
         while (i != null && j != null) {
@@ -162,7 +181,7 @@ public final class ListRange extends AList implements Serializable {
                 for (int i = first.intValue(), e = last.intValue();
                      i <= e; ++i)
                     f.apply(new IntNum(i));
-        } else if (first.rCompare(Integer.MAX_VALUE) > 0 &&
+        } else if (inc < 0 && first.rCompare(Integer.MAX_VALUE) > 0 &&
                    last.rCompare(Integer.MIN_VALUE) < 0) {
             if (first.compareTo(last) >= 0)
                 for (int i = first.intValue(), e = last.intValue();
@@ -183,7 +202,7 @@ public final class ListRange extends AList implements Serializable {
                 for (int i = first.intValue(), e = last.intValue();
                      i <= e; ++i)
                     v = f.apply(v, new IntNum(i));
-        } else if (first.rCompare(Integer.MAX_VALUE) > 0 &&
+        } else if (inc < 0 && first.rCompare(Integer.MAX_VALUE) > 0 &&
                    last.rCompare(Integer.MIN_VALUE) < 0) {
             if (first.compareTo(last) >= 0)
                 for (int i = first.intValue(), e = last.intValue();
@@ -199,9 +218,7 @@ public final class ListRange extends AList implements Serializable {
     }
 
     public AList reverse() {
-        ListRange r = new ListRange(last, first, null);
-        r.inc = -inc;
-        AList l = r;
+        AList l = new ListRange(last, first, null, -inc);
         for (AIter i = rest; i != null; i = i.next())
             l = new LList(i.first(), l);
         return l;
@@ -220,11 +237,8 @@ public final class ListRange extends AList implements Serializable {
                 }
         } else {
             for (j = first; j.compareTo(last) * inc <= 0; j = j.add(inc))
-                if (pred.apply(j) == Boolean.TRUE) {
-                    ListRange l = new ListRange(j, last, rest);
-                    l.inc = inc;
-                    return l;
-                }
+                if (pred.apply(j) == Boolean.TRUE)
+                    return new ListRange(j, last, rest, inc);
         }
         if (rest == null)
             return null;
@@ -242,7 +256,7 @@ public final class ListRange extends AList implements Serializable {
             l.reserve(e - i + 1);
             while (i <= e)
                 l.add(f.apply(new IntNum(i++)));
-        } else if (first.rCompare(Integer.MAX_VALUE) > 0 &&
+        } else if (inc < 0 && first.rCompare(Integer.MAX_VALUE) > 0 &&
                    last.rCompare(Integer.MIN_VALUE) < 0) {
             int i = first.intValue(), e = last.intValue();
             if (i < e)
@@ -293,8 +307,6 @@ public final class ListRange extends AList implements Serializable {
     }
 
     public Object copy() {
-        ListRange r = new ListRange(first, last, rest);
-        r.inc = inc;
-        return r;
+        return new ListRange(first, last, rest, inc);
     }
 }

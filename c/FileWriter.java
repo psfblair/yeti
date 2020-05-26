@@ -1,7 +1,9 @@
+// ex: se sts=4 sw=4 expandtab:
+
 /*
- * Yeti http library.
+ * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2008 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,12 +28,36 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-module yeti.http: deprecated;
+package yeti.lang.compiler;
 
-load yeti.lang.io;
+import java.io.*;
+import yeti.lang.Fun2;
 
-{
-    openTextUrl = openTextUrl [],
+class FileWriter extends Fun2 {
+    private String target;
 
-    getTextByUrl = getContents . openTextUrl []
+    FileWriter(String target) {
+        this.target = target;
+    }
+
+    public Object apply(Object className, Object codeBytes) {
+        String name = target + className;
+        try {
+            byte[] code = (byte[]) codeBytes;
+            int sl = name.lastIndexOf('/');
+            
+            if (sl > 0) {
+                new File(name.substring(0, sl)).mkdirs();
+            }
+            FileOutputStream out = new FileOutputStream(name);
+            out.write(code);
+            out.close();
+        } catch (IOException ex) {
+            throw new CompileException(0, 0,
+                        "Error writing " + name + ": " + ex.getMessage());
+        }
+        return null;
+    }
 }
+
+

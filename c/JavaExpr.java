@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator for java foreign interface.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2012 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -31,7 +31,7 @@
 
 package yeti.lang.compiler;
 
-import yeti.renamed.asm3.*;
+import yeti.renamed.asmx.*;
 
 class JavaExpr extends Code {
     Code object;
@@ -62,6 +62,32 @@ class JavaExpr extends Code {
             (argType.type == YetiType.JAVA_ARRAY ||
              argType.type == YetiType.JAVA &&
                 argType.javaType.isCollection())) {
+            YType t = argType.param.length != 0
+                        ? argType.param[0].deref() : null;
+            if (argType.type == YetiType.JAVA_ARRAY && t.javaType != null) {
+                if (t.javaType.description == "B") {
+                    ctx.typeInsn(CHECKCAST, "yeti/lang/AList");
+                    ctx.methodInsn(INVOKESTATIC, "yeti/lang/Core",
+                                   "bytes", "(Lyeti/lang/AList;)[B");
+                    return;
+                }
+                if (t.javaType.description.charAt(0) == 'L') {
+                    ctx.typeInsn(CHECKCAST, "yeti/lang/AList");
+                    ctx.methodInsn(INVOKESTATIC, "yeti/lang/MList", "ofList",
+                                   "(Lyeti/lang/AList;)Lyeti/lang/MList;");
+                    ctx.insn(DUP);
+                    ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/MList",
+                                  "length", "()J");
+                    ctx.insn(L2I);
+                    new NewArrayExpr(argType, null, 0).gen(ctx);
+                    ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/MList", "toArray",
+                                  "([Ljava/lang/Object;)[Ljava/lang/Object;");
+                    descr = JavaType.descriptionOf(argType);
+                    ctx.typeInsn(CHECKCAST, descr);
+                    ctx.forceType(descr);
+                    return;
+                }
+            }
             Label retry = new Label(), end = new Label();
             ctx.typeInsn(CHECKCAST, "yeti/lang/AIter"); // i
             String tmpClass = descr != "Ljava/lang/Set;"
@@ -80,12 +106,9 @@ class JavaExpr extends Code {
             ctx.insn(DUP2); // aiai
             ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
                                 "first", "()Ljava/lang/Object;");
-            YType t = null;
-            if (argType.param.length != 0 &&
-                ((t = argType.param[0]).type != YetiType.JAVA ||
-                 t.javaType.description.length() > 1)) {
+            if (t != null && (t.type != YetiType.JAVA ||
+                 t.javaType.description.length() > 1))
                 convert(ctx, given.param[0], argType.param[0]);
-            }
             // aiav
             ctx.methodInsn(INVOKEVIRTUAL, tmpClass,
                                 "add", "(Ljava/lang/Object;)Z"); // aiz
@@ -152,7 +175,6 @@ class JavaExpr extends Code {
                 convertNum(ctx, descr);
             }
             ctx.varInsn(ILOAD, index); // AaAvn
-            ctx.insn(SWAP); // AaAnv
             int insn = BASTORE;
             switch (argType.javaType.description.charAt(0)) {
                 case 'D': insn = DASTORE; break;
@@ -160,6 +182,13 @@ class JavaExpr extends Code {
                 case 'I': insn = IASTORE; break;
                 case 'J': insn = LASTORE; break;
                 case 'S': insn = SASTORE;
+            }
+            if (insn == DASTORE || insn == LASTORE) {
+                // AaAvvn actually - long and double is 2 entries
+                ctx.insn(DUP_X2); // AaAnvvn
+                ctx.insn(POP);    // AaAnvv
+            } else {
+                ctx.insn(SWAP); // AaAnv
             }
             ctx.insn(insn); // Aa
             ctx.jumpInsn(GOTO, next); // Aa
@@ -207,12 +236,11 @@ class JavaExpr extends Code {
             ctx.typeInsn(NEW, newInstr);
             ctx.insn(DUP_X1);
             ctx.insn(SWAP);
-            descr = descr.substring(11, 12);
+            descr = descr == "Ljava/lang/Long;" ? "J" : descr.substring(11, 12);
         }
         convertNum(ctx, descr);
-        if (newInstr != null) {
+        if (newInstr != null)
             ctx.visitInit(newInstr, "(" + descr + ")V");
-        }
     }
 
     private static void convertNum(Ctx ctx, String descr) {
@@ -222,8 +250,7 @@ class JavaExpr extends Code {
             case 'D': method = "doubleValue"; break;
             case 'F': method = "floatValue"; break;
             case 'I': method = "intValue"; break;
-            case 'L': if (descr == "Lyeti/lang/Num;")
-                          return;
+            case 'L': return;
             case 'J': method = "longValue"; break;
             case 'S': method = "shortValue"; break;
         }
@@ -247,8 +274,7 @@ class JavaExpr extends Code {
                 CaptureWrapper cw = arg.capture();
                 if (cw == null) {
                     arg.gen(ctx);
-                    ctx.captureCast(arg instanceof Capture
-                        ? ((Capture) arg).captureType() : javaType(arg.type));
+                    ctx.captureCast(arg.captureType());
                 } else {
                     cw.genPreGet(ctx);
                 }
@@ -262,15 +288,19 @@ class JavaExpr extends Code {
     }
 
     static void convertedArg(Ctx ctx, Code arg, YType argType, int line) {
-        String desc;
-        if (arg instanceof NumericConstant &&
-            (argType = argType.deref()).type == YetiType.JAVA &&
-            ((desc = argType.javaType.description) == "I" || desc == "J") &&
-            ((NumericConstant) arg).genInt(ctx, desc == "I")) {
-            return; // integer arguments can be directly generated
+        argType = argType.deref();
+        if (argType.type == YetiType.JAVA) {
+            // integer arguments can be directly generated
+            String desc = desc = argType.javaType.description;
+            if (desc == "I" || desc == "J") {
+                arg.genInt(ctx, line, desc == "J");
+                return;
+            }
         }
         if (genRawArg(ctx, arg, argType, line))
             convert(ctx, arg.type, argType);
+        else if (argType.type == YetiType.STR)
+            convertValue(ctx, arg.type.deref()); // for as cast
     }
 
     private static boolean genRawArg(Ctx ctx, Code arg,
@@ -312,35 +342,42 @@ class JavaExpr extends Code {
                 "java/lang/String", "toCharArray", "()[C");
             return false;
         }
-        if (arg instanceof StringConstant)
+        if (arg instanceof StringConstant || arg instanceof ConcatStrings)
             return false;
         // conversion from array to list
         if (argType.type == YetiType.MAP && given.type == YetiType.JAVA_ARRAY) {
-            String javaItem = given.param[0].javaType.description;
-            if (javaItem.length() == 1) {
-                String arrayType = "[".concat(javaItem);
+            JavaType javaItem = given.param[0].javaType;
+            if (javaItem != null && javaItem.description.length() == 1) {
+                String arrayType = "[".concat(javaItem.description);
                 ctx.typeInsn(CHECKCAST, arrayType);
                 ctx.methodInsn(INVOKESTATIC, "yeti/lang/PArray",
-                                    "wrap", "(" + arrayType + ")Lyeti/lang/AList;");
+                               "wrap", "(" + arrayType + ")Lyeti/lang/AList;");
                 return false;
             }
             Label isNull = new Label(), end = new Label();
             ctx.typeInsn(CHECKCAST, "[Ljava/lang/Object;");
             ctx.insn(DUP);
             ctx.jumpInsn(IFNULL, isNull);
-            if (argType.param[1].deref().type == YetiType.NONE) {
+            boolean toList = argType.param[1].deref().type == YetiType.NONE;
+            if (toList) {
                 ctx.insn(DUP);
                 ctx.insn(ARRAYLENGTH);
                 ctx.jumpInsn(IFEQ, isNull);
             }
-            ctx.typeInsn(NEW, "yeti/lang/MList");
-            ctx.insn(DUP_X1);
-            ctx.insn(SWAP);
-            ctx.visitInit("yeti/lang/MList", "([Ljava/lang/Object;)V");
+            if (toList && argType.param[0].deref().type == YetiType.STR) {
+                // convert null's to undef_str's
+                ctx.methodInsn(INVOKESTATIC, "yeti/lang/MList", "ofStrArray",
+                               "([Ljava/lang/Object;)Lyeti/lang/MList;");
+            } else {
+                ctx.typeInsn(NEW, "yeti/lang/MList");
+                ctx.insn(DUP_X1);
+                ctx.insn(SWAP);
+                ctx.visitInit("yeti/lang/MList", "([Ljava/lang/Object;)V");
+            }
             ctx.jumpInsn(GOTO, end);
             ctx.visitLabel(isNull);
             ctx.insn(POP);
-            if (argType.param[1].deref().type == YetiType.NONE) {
+            if (toList) {
                 ctx.insn(ACONST_NULL);
             } else {
                 ctx.typeInsn(NEW, "yeti/lang/MList");
@@ -358,6 +395,7 @@ class JavaExpr extends Code {
         genRawArg(ctx, arg, argType, line);
         if (arg.type.deref().type == YetiType.NUM &&
             argType.javaType.description.length() == 1) {
+            ctx.typeInsn(CHECKCAST, "yeti/lang/Num");
             convertNum(ctx, argType.javaType.description);
         }
     }
@@ -371,6 +409,8 @@ class JavaExpr extends Code {
             ctx.insn(ACONST_NULL);
         } else if (descr == "Ljava/lang/String;") {
             Label nonnull = new Label();
+            // checkcast to not lie later the type with ctx.fieldInsn
+            ctx.typeInsn(CHECKCAST, "java/lang/String");
             ctx.insn(DUP);
             ctx.jumpInsn(IFNONNULL, nonnull);
             ctx.insn(POP);
@@ -389,6 +429,10 @@ class JavaExpr extends Code {
             ctx.visitLabel(end);
         } else if (descr == "B" || descr == "S" ||
                    descr == "I" || descr == "J") {
+            if (descr == "B") {
+                ctx.intConst(0xff);
+                ctx.insn(IAND);
+            }
             ctx.typeInsn(NEW, "yeti/lang/IntNum");
             if (descr == "J") {
                 ctx.insn(DUP_X2);

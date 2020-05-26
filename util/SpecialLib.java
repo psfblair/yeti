@@ -31,18 +31,18 @@
 package yeti.lang;
 
 import java.io.*;
-import yeti.renamed.asm3.*;
+import yeti.renamed.asmx.*;
 
-class LListAdapter extends ClassAdapter implements Opcodes {
+class LListAdapter extends ClassVisitor implements Opcodes {
     LListAdapter(ClassVisitor cv) {
-        super(cv);
+        super(ASM5, cv);
     }
 
     public MethodVisitor visitMethod(int access, String name, String desc,
                                      String signature, String[] exceptions) {
         return "length".equals(name) || "forEach".equals(name) ||
                "fold".equals(name) || "smap".equals(name) || 
-               "copy".equals(name) ? null
+               "copy".equals(name) || "take".equals(name) ? null
                 : cv.visitMethod(access, name, desc, signature, exceptions);
     }
 
@@ -58,7 +58,7 @@ class LListAdapter extends ClassAdapter implements Opcodes {
         mv.visitLabel(retry);
         mv.visitIincInsn(0, 1);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "next", "()Lyeti/lang/AIter;");
+                           "next", "()Lyeti/lang/AIter;", false);
         mv.visitInsn(DUP);
         mv.visitJumpInsn(IFNONNULL, retry);
         mv.visitLabel(end);
@@ -79,12 +79,13 @@ class LListAdapter extends ClassAdapter implements Opcodes {
         mv.visitLabel(retry = new Label());
         mv.visitInsn(DUP2); // fun iter fun iter
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "first", "()Ljava/lang/Object;");
+                           "first", "()Ljava/lang/Object;", false);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun",
-                           "apply", "(Ljava/lang/Object;)Ljava/lang/Object;");
+                           "apply", "(Ljava/lang/Object;)Ljava/lang/Object;",
+                           false);
         mv.visitInsn(POP);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "next", "()Lyeti/lang/AIter;");
+                           "next", "()Lyeti/lang/AIter;", false);
         mv.visitInsn(DUP);
         mv.visitJumpInsn(IFNONNULL, retry);
         mv.visitLabel(end);
@@ -105,12 +106,12 @@ class LListAdapter extends ClassAdapter implements Opcodes {
         mv.visitInsn(SWAP);
         mv.visitVarInsn(ALOAD, 0);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "first", "()Ljava/lang/Object;");
+                           "first", "()Ljava/lang/Object;", false);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun", "apply",
-            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
         mv.visitVarInsn(ALOAD, 0); 
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "next", "()Lyeti/lang/AIter;");
+                           "next", "()Lyeti/lang/AIter;", false);
         mv.visitInsn(DUP);
         mv.visitVarInsn(ASTORE, 0);
         mv.visitJumpInsn(IFNONNULL, retry);
@@ -129,20 +130,20 @@ class LListAdapter extends ClassAdapter implements Opcodes {
         mv.visitTypeInsn(NEW, "yeti/lang/MList");
         mv.visitInsn(DUP);
         mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/MList",
-                           "<init>", "()V");
+                           "<init>", "()V", false);
         mv.visitVarInsn(ASTORE, 0);
         mv.visitLabel(retry = new Label());
         mv.visitInsn(DUP2); // fun iter fun iter
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "first", "()Ljava/lang/Object;"); // i -> v
-        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun", // f v -> v'
-                           "apply", "(Ljava/lang/Object;)Ljava/lang/Object;");
+                           "first", "()Ljava/lang/Object;", false); // i -> v
+        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun", "apply", // f v -> v'
+                           "(Ljava/lang/Object;)Ljava/lang/Object;", false);
         mv.visitVarInsn(ALOAD, 0);
         mv.visitInsn(SWAP);
-        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/MList",
-                           "add", "(Ljava/lang/Object;)V"); // l v' -> ()
-        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter",
-                           "next", "()Lyeti/lang/AIter;"); // i -> i'
+        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/MList", "add",
+                           "(Ljava/lang/Object;)V", false); // l v' -> ()
+        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AIter", "next",
+                           "()Lyeti/lang/AIter;", false); // i -> i'
         mv.visitInsn(DUP);
         mv.visitJumpInsn(IFNONNULL, retry);
         mv.visitVarInsn(ALOAD, 0);
@@ -160,11 +161,39 @@ class LListAdapter extends ClassAdapter implements Opcodes {
         mv.visitInsn(ACONST_NULL);
         mv.visitVarInsn(ASTORE, 0);
         mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/MList",
-                           "<init>", "(Lyeti/lang/AIter;)V");
+                           "<init>", "(Lyeti/lang/AIter;)V", false);
         mv.visitInsn(ARETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
         
+        mv = cv.visitMethod(ACC_PUBLIC, "take",
+                            "(II)Lyeti/lang/AList;", null, null);
+        mv.visitVarInsn(ALOAD, 0);
+        mv.visitInsn(ACONST_NULL);
+        mv.visitVarInsn(ASTORE, 0);
+
+        Label drop = new Label();
+        mv.visitLabel(retry = new Label());
+        mv.visitVarInsn(ILOAD, 1);
+        mv.visitJumpInsn(IFLE, drop);
+        mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/AList",
+                           "rest", "()Lyeti/lang/AList;", false); // i -> i'
+        mv.visitIincInsn(1, -1);
+        mv.visitInsn(DUP);
+        mv.visitJumpInsn(IFNONNULL, retry);
+        mv.visitInsn(ARETURN);
+        
+        mv.visitLabel(drop);
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitJumpInsn(IFLT, end = new Label());
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitMethodInsn(INVOKESTATIC, "yeti/lang/TakeList", "take",
+                           "(Lyeti/lang/AIter;I)Lyeti/lang/AList;", false);
+        mv.visitLabel(end);
+        mv.visitInsn(ARETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+
         cv.visitEnd();
     }
 }
@@ -194,14 +223,26 @@ public class SpecialLib implements Opcodes {
 
     void fun2_() throws Exception {
         cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-        cw.visit(V1_4, ACC_SUPER,
+        cw.visit(V1_6, ACC_SUPER,
                  "yeti/lang/Fun2_", null, "yeti/lang/Fun", null);
-        cw.visitField(0, "fun", "Lyeti/lang/Fun2;", null, null).visitEnd();
-        cw.visitField(0, "arg", "Ljava/lang/Object;", null, null).visitEnd();
-        MethodVisitor mv = cw.visitMethod(0, "<init>", "()V", null, null);
+        cw.visitField(ACC_PRIVATE | ACC_FINAL,
+                "fun", "Lyeti/lang/Fun2;", null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_FINAL,
+                "arg", "Ljava/lang/Object;", null, null).visitEnd();
+        MethodVisitor mv = cw.visitMethod(0, "<init>",
+                        "(Lyeti/lang/Fun2;Ljava/lang/Object;)V", null, null);
         mv.visitCode();
         mv.visitVarInsn(ALOAD, 0);
-        mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/Fun", "<init>", "()V");
+        mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/Fun",
+                           "<init>", "()V", false);
+        mv.visitVarInsn(ALOAD, 0);
+        mv.visitVarInsn(ALOAD, 1);
+        mv.visitFieldInsn(PUTFIELD, "yeti/lang/Fun2_",
+                          "fun", "Lyeti/lang/Fun2;");
+        mv.visitVarInsn(ALOAD, 0);
+        mv.visitVarInsn(ALOAD, 2);
+        mv.visitFieldInsn(PUTFIELD, "yeti/lang/Fun2_",
+                          "arg", "Ljava/lang/Object;");
         mv.visitInsn(RETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
@@ -220,7 +261,7 @@ public class SpecialLib implements Opcodes {
         mv.visitInsn(ACONST_NULL);
         mv.visitVarInsn(ASTORE, 1);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun2", "apply",
-            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", false);
         mv.visitInsn(ARETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
@@ -229,7 +270,7 @@ public class SpecialLib implements Opcodes {
 
     void compose() throws Exception {
         cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-        cw.visit(V1_4, ACC_PUBLIC | ACC_FINAL | ACC_SUPER,
+        cw.visit(V1_6, ACC_PUBLIC | ACC_FINAL | ACC_SUPER,
                  "yeti/lang/Compose", null, "yeti/lang/Fun", null);
         cw.visitField(ACC_FINAL | ACC_PRIVATE,
                       "f", "Lyeti/lang/Fun;", null, null).visitEnd();
@@ -239,7 +280,8 @@ public class SpecialLib implements Opcodes {
             "(Ljava/lang/Object;Ljava/lang/Object;)V", null, null);
         mv.visitCode();
         mv.visitVarInsn(ALOAD, 0);
-        mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/Fun", "<init>", "()V");
+        mv.visitMethodInsn(INVOKESPECIAL, "yeti/lang/Fun",
+                           "<init>", "()V", false);
         mv.visitVarInsn(ALOAD, 0);
         mv.visitVarInsn(ALOAD, 1);
         mv.visitTypeInsn(CHECKCAST, "yeti/lang/Fun");
@@ -267,9 +309,9 @@ public class SpecialLib implements Opcodes {
         mv.visitInsn(ACONST_NULL);
         mv.visitVarInsn(ASTORE, 1);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun", "apply",
-            "(Ljava/lang/Object;)Ljava/lang/Object;");
+            "(Ljava/lang/Object;)Ljava/lang/Object;", false);
         mv.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun", "apply",
-            "(Ljava/lang/Object;)Ljava/lang/Object;");
+            "(Ljava/lang/Object;)Ljava/lang/Object;", false);
         mv.visitInsn(ARETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
@@ -278,7 +320,7 @@ public class SpecialLib implements Opcodes {
 
     void unsafe() throws Exception {
         cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-        cw.visit(V1_4, ACC_SUPER, "yeti/lang/Unsafe",
+        cw.visit(V1_6, ACC_SUPER, "yeti/lang/Unsafe",
                  null, "java/lang/Object", null);
         MethodVisitor mv = cw.visitMethod(ACC_PUBLIC | ACC_STATIC,
                 "unsafeThrow", "(Ljava/lang/Throwable;)V", null, null);

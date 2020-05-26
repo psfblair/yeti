@@ -59,7 +59,8 @@ syn keyword yetiStatement module program synchronized
 syn keyword yetiStorageClass var norec get set
 
 syn keyword yetiAnyVar _
-syn keyword yetiBoolean false true none undef_bool undef_str
+syn keyword yetiBoolean false true undef_bool
+syn keyword yetiConstant none undef_str utf8
 syn keyword yetiFunction array filter fold id mapHash number head reverse tail
 syn keyword yetiFunction any all find index const at on setHashDefault flip sum
 syn keyword yetiFunction nullptr? empty? min max maybe abs push sysExit shift
@@ -78,7 +79,11 @@ syn keyword yetiFunction strLastIndexOf' copy slice deleteAll hash avoid
 syn keyword yetiFunction groupBy insertHash strCapitalize strUncapitalize
 syn keyword yetiFunction identityHash deleteFile binReadFile binWriteFile
 syn keyword yetiFunction binReadAll trace runThread threadLocal peekObject
-syn keyword yetiFunction listDirectory clearArray mapJavaList
+syn keyword yetiFunction listDirectory clearArray mapJavaList createPath
+syn keyword yetiFunction threadExit runnable concurrentHash weakHash customHash
+syn keyword yetiFunction atomic round mapIntoHash base64Encode base64Decode
+syn keyword yetiFunction fetchURL print println eprintln readln stdin sleep
+syn keyword yetiFunction strOfInt hex parseProperties
 syn keyword yetiExternal load deprecated
 syn keyword yetiExternal import skipwhite skipempty nextgroup=yetiImport
 syn match yetiFunction "\<contains?\>"
@@ -88,7 +93,7 @@ syn keyword yetiOperator classOf instanceof skipempty skipwhite nextgroup=yetiCl
 syn match yetiOperator #[:;,=~!+\\\-*%<>^]\+#
 syn match yetiOperator #`[a-zA-Z_?]\+`#
 syn match yetiOperator #/[^/*]\@=#
-syn match yetiOperator #\.\.\.#
+syn match yetiOperator #\.\.\.\||>#
 
 syn match yetiConstant "(\s*)"
 syn match yetiConstant "\[\s*\]"
@@ -102,7 +107,7 @@ syn region yetiString start=+"\(""\)\@!+ end=+"\|\\[ \t\r]*\n+ contains=yetiEmbe
 syn region yetiString start=+\<'+ skip=+''+ end=+'+
 
 " Numbers: supporting integers and floating point numbers
-syn match yetiNumber "-\=\<[+-]\?\d*\.\?\d\+\([eE]\d*\)\?\>"
+syn match yetiNumber "-\=\<\([+-]\?\d*\.\?\d\+\([eE]\d*\)\?\|0x[0-9a-fA-F]\+\)\>"
 
 syn match yetiMemberOp "\(\<\u\(\w\|\$\)*\_\s*\)\?#\_\s*\w\+\_\s*\(()\)\?"
 
@@ -118,7 +123,8 @@ syn region yetiMethodDef matchgroup=yetiClassDef start=")" end=",\|\<end\>" cont
 syn region yetiFieldDef matchgroup=yetiOperator start="=" matchgroup=yetiClassDef end=",\|\<end\>" contains=TOP contained
 
 " Yeti type definition syntax
-syn region yetiTypeBind matchgroup=yetiTypeDef start="\<typedef\>" end="=" skipempty skipwhite nextgroup=@yetiTypeDecls contains=NOTHING
+syn keyword yetiTypeMod shared opaque contained
+syn region yetiTypeBind matchgroup=yetiTypeDef start="\<typedef\>" end="=\|\<unshare\>" skipempty skipwhite nextgroup=@yetiTypeDecls contains=yetiTypeMod
 syn keyword yetiType is skipempty skipwhite nextgroup=@yetiTypeDecls
 syn keyword yetiCast as unsafely_as skipempty skipwhite nextgroup=@yetiTypeDecls
 "syn match yetiTypeDecl contained /\(\l\|_\)\(\w\|'\)*/
@@ -126,7 +132,7 @@ syn cluster yetiTypeDecls contains=yetiTypeDecl,yetiTypeVar
 syn region yetiTypeDecl transparent start="(" end=")" contained contains=@yetiTypeDecls,yetiComment skipempty skipwhite nextgroup=yetiTypeOp
 syn region yetiTypeDecl transparent start="{" end="}" contained contains=yetiType,yetiComment skipempty skipwhite nextgroup=yetiTypeOp
 syn match yetiTypeDecl "\~\(\w\|\.\|\$\)*\(\[\]\)*" contained skipempty skipwhite nextgroup=yetiTypeOp
-syn match yetiTypeDecl "\l\(\w\|'\|?\)*" contained skipempty skipwhite nextgroup=yetiTypeOp
+syn match yetiTypeDecl "\l\(\w\|'\|?\)*!\?" contained skipempty skipwhite nextgroup=yetiTypeOp
 syn match yetiTypeVar "['^]\(\w\|'\)*\(\[\]\)*" contained skipwhite skipempty nextgroup=yetiTypeOp
 syn match yetiTypeDecl "\<\u\(\w\|'\)*\>" contained skipwhite skipempty nextgroup=@yetiTypeDecls
 syn match yetiTypeDecl "()" contained skipwhite skipempty nextgroup=yetiTypeOp
@@ -203,6 +209,7 @@ if version >= 508 || !exists("did_yeti_syntax_inits")
   HiLink yetiTypeDelimiter Delimiter
   HiLink yetiType	Type
   HiLink yetiTypeDef	TypeDef
+  HiLink yetiTypeMod	yetiTypeDef
   HiLink yetiClassType	Type
   HiLink yetiClass	Structure
   HiLink yetiExtends	Structure

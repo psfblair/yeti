@@ -4,7 +4,7 @@
  * Yeti type analyzer.
  * Uses Hindley-Milner type inference algorithm
  * with extensions for polymorphic structs and variants.
- * Copyright (c) 2007,2008.2009 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,17 +32,17 @@
 
 package yeti.lang.compiler;
 
-import java.util.List;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 
 class YType {
     int type;
-    Map partialMembers;
-    Map finalMembers;
+    Map requiredMembers;
+    Map allowedMembers;
 
     YType[] param;
     YType ref;
@@ -71,12 +71,12 @@ class YType {
 
     public String toString() {
         return (String) new ShowTypeFun().apply("",
-                    TypeDescr.yetiType(this, null));
+                    TypeDescr.yetiType(this, null, null));
     }
  
-    public String toString(Scope scope) {
+    public String toString(Scope scope, TypeException ex) {
         return (String) new ShowTypeFun().apply("",
-                    TypeDescr.yetiType(this, TypePattern.toPattern(scope)));
+            TypeDescr.yetiType(this, TypePattern.toPattern(scope, false), ex));
     }
 
     YType deref() {
@@ -88,7 +88,8 @@ class YType {
             next = type.ref;
             type.ref = res;
         }
-        if (res.doc == null)
+        if ((res.type <= 0 || res.type > YetiType.PRIMITIVE_END) &&
+                res.doc == null)
             res.doc = this;
         return res;
     }
@@ -118,11 +119,13 @@ class YType {
 
 class TypeException extends Exception {
     boolean special;
-    private YType a, b;
+    YType a, b;
     String sep, ext;
+    List trace;
 
     TypeException(String what) {
         super(what);
+        trace = new ArrayList();
     }
 
     TypeException(YType a_, YType b_) {
@@ -130,6 +133,7 @@ class TypeException extends Exception {
         b = b_;
         sep = " is not ";
         ext = "";
+        trace = new ArrayList();
     }
 
     TypeException(YType a_, String sep_, YType b_, String ext_) {
@@ -137,6 +141,7 @@ class TypeException extends Exception {
         b = b_;
         sep = sep_;
         ext = ext_;
+        trace = new ArrayList();
     }
 
     public String getMessage() {
@@ -146,8 +151,8 @@ class TypeException extends Exception {
     public String getMessage(Scope scope) {
         if (a == null)
             return super.getMessage();
-        return "Type mismatch: " + a.toString(scope) +
-               sep + b.toString(scope) + ext;
+        return "Type mismatch: " + a.toString(scope, null) +
+               sep + b.toString(scope, null) + ext;
     }
 }
 
@@ -158,8 +163,6 @@ class Scope {
     YType[] free;
     Closure closure; // non-null means outer scopes must be proxied
     YetiType.ClassBinding importClass;
-    YType[] typeDef;
-
     YetiType.ScopeCtx ctx;
 
     Scope(Scope outer, String name, Binder binder) {
@@ -168,9 +171,31 @@ class Scope {
         this.binder = binder;
         ctx = outer == null ? null : outer.ctx;
     }
+
+    YType[] typedef(boolean use) {
+        return null;
+    }
 }
 
-public class YetiType implements YetiParser {
+final class TypeScope extends Scope {
+    private final YType[] def;
+    final LoadModule module;
+
+    TypeScope(Scope outer, String name, YType[] typedef, LoadModule m) {
+        super(outer, name, null);
+        def = typedef;
+        free = YetiType.NO_PARAM;
+        module = m;
+    }
+
+    YType[] typedef(boolean use) {
+        if (use && module != null)
+            module.typedefUsed = true;
+        return def;
+    }
+}
+
+class YetiType implements YetiParser {
     static final int VAR  = 0;
     static final int UNIT = 1;
     static final int STR  = 2;
@@ -180,17 +205,22 @@ public class YetiType implements YetiParser {
     static final int NONE = 6;
     static final int LIST_MARKER = 7;
     static final int MAP_MARKER  = 8;
+    static final int PRIMITIVE_END = 8;
     static final int FUN  = 9; // a -> b
     static final int MAP  = 10; // value, index, (LIST | MAP)
     static final int STRUCT = 11;
     static final int VARIANT = 12;
     static final int JAVA = 13;
     static final int JAVA_ARRAY = 14;
+    static final int OPAQUE_TYPES = 0x10000;
 
     static final int FL_ORDERED_REQUIRED = 1;
-    static final int FL_TAINTED_VAR = 2;
-    static final int FL_ERROR_IS_HERE = 0x100;
-    static final int FL_ANY_PATTERN = 0x4000;
+    static final int FL_TAINTED_VAR      = 2;
+    static final int FL_AMBIGUOUS_OPAQUE = 4;
+    static final int FL_ANY_CASE         = 8;
+    static final int FL_FLEX_TYPEDEF     = 0x10;
+    static final int FL_ERROR_IS_HERE    = 0x100;
+    static final int FL_ANY_PATTERN      = 0x4000;
     static final int FL_PARTIAL_PATTERN  = 0x8000;
 
     static final int FIELD_NON_POLYMORPHIC = 1;
@@ -233,6 +263,7 @@ public class YetiType implements YetiParser {
     static final YType A_TO_BOOL = fun(A, BOOL_TYPE);
     static final YType LIST_TO_A = fun(A_B_LIST_TYPE, A);
     static final YType MAP_TO_BOOL = fun(A_B_C_MAP_TYPE, BOOL_TYPE);
+    static final YType MAP_TO_NUM = fun(A_B_C_MAP_TYPE, NUM_TYPE);
     static final YType LIST_TO_LIST = fun(A_B_LIST_TYPE, A_LIST_TYPE);
     static final YType IN_TYPE = fun2Arg(A, A_B_C_MAP_TYPE, BOOL_TYPE);
     static final YType COMPOSE_TYPE = fun2Arg(fun(B, C), fun(A, B), fun(A, C));
@@ -247,6 +278,7 @@ public class YetiType implements YetiParser {
     static final YType CLASS_TYPE = new YType("Ljava/lang/Class;");
     static final YType OBJECT_TYPE = new YType("Ljava/lang/Object;");
     static final YType WITH_EXIT_TYPE = fun(fun(fun(A, B), A), A);
+    static final YType THROW_TYPE = fun(new YType("Ljava/lang/Throwable;"), A);
 
     static final YType[] PRIMITIVES =
         { null, UNIT_TYPE, STR_TYPE, NUM_TYPE, BOOL_TYPE, CHAR_TYPE,
@@ -264,8 +296,6 @@ public class YetiType implements YetiParser {
         bindCompare("<=", LG_TYPE, CompareFun.COND_LE,
         bindCompare(">" , LG_TYPE, CompareFun.COND_GT,
         bindCompare(">=", LG_TYPE, CompareFun.COND_GE,
-        bindScope("_argv", new BuiltIn(1),
-        bindScope("randomInt", new BuiltIn(22),
         bindPoly(".", COMPOSE_TYPE, new BuiltIn(6),
         bindPoly("in", IN_TYPE, new BuiltIn(2),
         bindPoly("::", CONS_TYPE, new BuiltIn(3),
@@ -279,6 +309,8 @@ public class YetiType implements YetiParser {
         bindPoly("tail", LIST_TO_LIST, new BuiltIn(12),
         bindPoly("synchronized", SYNCHRONIZED_TYPE, new BuiltIn(7),
         bindPoly("withExit", WITH_EXIT_TYPE, new BuiltIn(24),
+        bindPoly("length", MAP_TO_NUM, new BuiltIn(25),
+        bindPoly("throw", WITH_EXIT_TYPE, new BuiltIn(26),
         bindArith("+", "add", bindArith("-", "sub",
         bindArith("*", "mul", bindArith("/", "div",
         bindArith("%", "rem", bindArith("div", "intDiv",
@@ -390,15 +422,6 @@ public class YetiType implements YetiParser {
             new YType[] { a, new YType(FUN, new YType[] { b, res }) });
     }
 
-    static YType variantOf(String[] na, YType[] ta) {
-        YType t = new YType(VARIANT, ta);
-        t.partialMembers = new HashMap(na.length);
-        for (int i = 0; i < na.length; ++i) {
-            t.partialMembers.put(na[i], ta[i]);
-        }
-        return t;
-    }
-
     static YType mutableFieldRef(YType src) {
         YType t = new YType(src.depth);
         t.ref = src.ref;
@@ -411,6 +434,7 @@ public class YetiType implements YetiParser {
         YType t = new YType(depth);
         t.ref = ref.deref();
         t.field = kind;
+        t.doc = ref.doc;
         return t;
     }
 
@@ -432,8 +456,17 @@ public class YetiType implements YetiParser {
     }
 
     static final class ScopeCtx {
-        String packageName;
-        String className;
+        final String packageName;
+        final String className;
+        final Map opaqueTypes;
+        final Compiler compiler;
+
+        ScopeCtx(String className_, Compiler compiler_) {
+            packageName = JavaType.packageOfClass(className_);
+            className = className_;
+            opaqueTypes = compiler_.opaqueTypes;
+            compiler = compiler_;
+        }
     }
 
     static YType orderedVar(int maxDepth) {
@@ -442,19 +475,19 @@ public class YetiType implements YetiParser {
         return type;
     }
 
-    static void limitDepth(YType type, int maxDepth) {
+    static void limitDepth(YType type, int maxDepth, int setFlag) {
         type = type.deref();
         if (type.type != VAR) {
-            if (type.seen) {
+            if (type.seen)
                 return;
-            }
             type.seen = true;
-            for (int i = type.param.length; --i >= 0;) {
-                limitDepth(type.param[i], maxDepth);
-            }
+            for (int i = type.param.length; --i >= 0;)
+                limitDepth(type.param[i], maxDepth, setFlag);
             type.seen = false;
-        } else if (type.depth > maxDepth) {
-            type.depth = maxDepth;
+        } else {
+            if (type.depth > maxDepth)
+                type.depth = maxDepth;
+            type.flags |= setFlag;
         }
     }
 
@@ -463,102 +496,146 @@ public class YetiType implements YetiParser {
     }
 
     static void finalizeStruct(YType partial, YType src) throws TypeException {
-        if (src.finalMembers == null || partial.partialMembers == null /*||
-                partial.finalMembers != null*/) {
+        if (src.allowedMembers == null || partial.requiredMembers == null /*||
+                partial.allowedMembers != null*/) {
             return; // nothing to check
         }
-        Object[] members = partial.partialMembers.entrySet().toArray();
-        for (int i = 0; i < members.length; ++i) {
-            Map.Entry entry = (Map.Entry) members[i];
-            YType ff = (YType) src.finalMembers.get(entry.getKey());
-            if (ff == null) {
-                throw new TypeException(src, " => ",
-                       partial, " (member missing: " + entry.getKey() + ")");
+        Object[] members = partial.requiredMembers.entrySet().toArray();
+        Object current = null;
+        try {
+            for (int i = 0; i < members.length; ++i) {
+                Map.Entry entry = (Map.Entry) members[i];
+                Object name = entry.getKey();
+                YType ff = (YType) src.allowedMembers.get(name);
+                if (ff == null) {
+                    if ((partial.flags & FL_ANY_CASE) != 0)
+                        continue;
+                    throw new TypeException(src, " => ",
+                           partial, " (member missing: " + name + ")");
+                }
+                YType partField = (YType) entry.getValue();
+                if (partField.field == FIELD_MUTABLE &&
+                        ff.field != FIELD_MUTABLE)
+                    throw new TypeException("Field '" + name
+                        + "' constness mismatch: " + src + " => " + partial);
+                current = name;
+                unify(partField, ff);
+                current = null;
             }
-            YType partField = (YType) entry.getValue();
-            if (partField.field == FIELD_MUTABLE && ff.field != FIELD_MUTABLE) {
-                throw new TypeException("Field '" + entry.getKey()
-                    + "' constness mismatch: " + src + " => " + partial);
+        } catch (TypeException ex) {
+            if (current != null) {
+                ex.trace.add(current);
+                ex.trace.add(partial);
+                ex.trace.add(src);
             }
-            unify(partField, ff);
+            throw ex;
         }
     }
 
     static void unifyMembers(YType a, YType b) throws TypeException {
         YType oldRef = b.ref;
+        Object currentField = null;
         try {
             b.ref = a; // just fake ref now to avoid cycles...
             Map ff;
+            if (((a.flags | b.flags) & FL_FLEX_TYPEDEF) != 0) {
+                int x = (a.allowedMembers  != null ? 1 : 0) |
+                        (a.requiredMembers != null ? 2 : 0) |
+                        (b.allowedMembers  != null ? 4 : 0) |
+                        (b.requiredMembers != null ? 8 : 0);
+                if (x == 6 || x == 9) { // 0110 or 1001
+                    YType t = (a.flags & FL_FLEX_TYPEDEF) != 0 ? a : b;
+                    Map tmp = t.allowedMembers;
+                    t.allowedMembers = t.requiredMembers;
+                    t.requiredMembers = tmp;
+                    t.flags &= ~FL_FLEX_TYPEDEF; // flip only once.
+                }
+            }
+            // don't be smart anymore
+            a.flags &= ~FL_FLEX_TYPEDEF;
             if (((a.flags ^ b.flags) & FL_ORDERED_REQUIRED) != 0) {
                 // VARIANT types are sometimes ordered.
                 // when all their variant parameters are ordered types.
-                if ((a.flags & FL_ORDERED_REQUIRED) != 0) {
+                if ((a.flags & FL_ORDERED_REQUIRED) != 0)
                     requireOrdered(b);
-                } else {
+                else
                     requireOrdered(a);
-                }
             }
-            if (a.finalMembers == null) {
-                ff = b.finalMembers;
-            } else if (b.finalMembers == null) {
-                ff = a.finalMembers;
+            if (a.allowedMembers == null) {
+                ff = b.allowedMembers;
+            } else if (b.allowedMembers == null) {
+                ff = a.allowedMembers;
             } else {
                 // unify final members
-                ff = new HashMap(a.finalMembers);
+                ff = new IdentityHashMap(a.allowedMembers);
                 for (Iterator i = ff.entrySet().iterator(); i.hasNext();) {
                     Map.Entry entry = (Map.Entry) i.next();
-                    YType f = (YType) b.finalMembers.get(entry.getKey());
+                    currentField = entry.getKey();
+                    YType f = (YType) b.allowedMembers.get(currentField);
                     if (f != null) {
                         YType t = (YType) entry.getValue();
                         unify(f, t);
                         // constness spreads
                         if (t.field != f.field) {
-                            if (t.field == 0) {
+                            if (t.field == 0)
                                 entry.setValue(t = f);
-                            }
                             t.field = FIELD_NON_POLYMORPHIC;
                         }
                     } else {
                         i.remove();
                     }
                 }
-                if (ff.isEmpty()) {
+                currentField = null;
+                if (ff.isEmpty())
                     mismatch(a, b);
-                }
             }
             finalizeStruct(a, b);
             finalizeStruct(b, a);
-            if (a.partialMembers == null) {
-                a.partialMembers = b.partialMembers;
-            } else if (b.partialMembers != null) {
+
+            if (ff != null && (b.flags & FL_ANY_CASE) != 0) {
+                if ((a.flags & FL_ANY_CASE) != 0)
+                    a.requiredMembers = null;
+            } else if (a.requiredMembers == null ||
+                       (ff != null && (a.flags & FL_ANY_CASE) != 0)) {
+                a.requiredMembers = b.requiredMembers;
+            } else if (b.requiredMembers != null) {
                 // join partial members
-                Object[] aa = a.partialMembers.entrySet().toArray();
+                Object[] aa = a.requiredMembers.entrySet().toArray();
                 for (int i = 0; i < aa.length; ++i) {
                     Map.Entry entry = (Map.Entry) aa[i];
-                    YType f = (YType) b.partialMembers.get(entry.getKey());
+                    currentField = entry.getKey();
+                    YType f = (YType) b.requiredMembers.get(currentField);
                     if (f != null) {
                         unify((YType) entry.getValue(), f);
                         // mutability spreads
-                        if (f.field >= FIELD_NON_POLYMORPHIC) {
+                        if (f.field >= FIELD_NON_POLYMORPHIC)
                             entry.setValue(f);
-                        }
                     }
                 }
-                a.partialMembers.putAll(b.partialMembers);
+                currentField = null;
+                a.requiredMembers.putAll(b.requiredMembers);
             }
-            a.finalMembers = ff;
+            a.allowedMembers = ff;
+            a.flags &= b.flags | ~(FL_ANY_CASE | FL_FLEX_TYPEDEF);
             if (ff == null) {
-                ff = a.partialMembers;
-            } else if (a.partialMembers != null) {
-                ff = new HashMap(ff);
-                ff.putAll(a.partialMembers);
+                ff = a.requiredMembers;
+            } else if (a.requiredMembers != null) {
+                ff = new IdentityHashMap(ff);
+                ff.putAll(a.requiredMembers);
             }
             unify(a.param[0], b.param[0]);
             structParam(a, ff, a.param[0].deref());
             b.type = VAR;
             b.ref = a;
+            if ((a.param[0].flags & FL_TAINTED_VAR) != 0)
+                limitDepth(a, a.param[0].depth, FL_TAINTED_VAR);
         } catch (TypeException ex) {
             b.ref = oldRef;
+            if (currentField != null) {
+                ex.trace.add(currentField);
+                ex.trace.add(a);
+                ex.trace.add(b);
+            }
             throw ex;
         }
     }
@@ -569,9 +646,8 @@ public class YetiType implements YetiParser {
         YType[] a = new YType[values.size() + 1];
         a[0] = depth;
         Iterator i = values.values().iterator();
-        for (int j = 1; i.hasNext(); ++j) {
+        for (int j = 1; i.hasNext(); ++j)
             a[j] = (YType) i.next();
-        }
         st.param = a;
     }
 
@@ -582,9 +658,8 @@ public class YetiType implements YetiParser {
                 return;
             mismatch(jt, t);
         }
-        if (descr == t.javaType.description) {
+        if (descr == t.javaType.description)
             return;
-        }
         mismatch(jt, t);
     }
 
@@ -592,17 +667,15 @@ public class YetiType implements YetiParser {
         switch (type.type) {
             case VARIANT:
                 if ((type.flags & FL_ORDERED_REQUIRED) == 0) {
-                    if (type.partialMembers != null) {
-                        Iterator i = type.partialMembers.values().iterator();
-                        while (i.hasNext()) {
+                    if (type.requiredMembers != null) {
+                        Iterator i = type.requiredMembers.values().iterator();
+                        while (i.hasNext())
                             requireOrdered((YType) i.next());
-                        }
                     }
-                    if (type.finalMembers != null) {
-                        Iterator i = type.finalMembers.values().iterator();
-                        while (i.hasNext()) {
+                    if (type.allowedMembers != null) {
+                        Iterator i = type.allowedMembers.values().iterator();
+                        while (i.hasNext())
                             requireOrdered((YType) i.next());
-                        }
                         type.flags |= FL_ORDERED_REQUIRED;
                     }
                 }
@@ -612,14 +685,12 @@ public class YetiType implements YetiParser {
                 requireOrdered(type.param[0]);
                 return;
             case VAR:
-                if (type.ref != null) {
+                if (type.ref != null)
                     requireOrdered(type.ref);
-                } else {
+                else
                     type.flags |= FL_ORDERED_REQUIRED;
-                }
             case NUM:
             case STR:
-            case UNIT:
             case LIST_MARKER:
                 return;
             case JAVA:
@@ -644,33 +715,47 @@ public class YetiType implements YetiParser {
             ex.special = true;
             throw ex;
         }
-        if (type.param != null && type.type != VARIANT && type.type != STRUCT) {
-            for (int i = type.param.length; --i >= 0;) {
+        if (type.param != null && type.type != VARIANT && type.type != STRUCT)
+            for (int i = type.param.length; --i >= 0;)
                 occursCheck(type.param[i], var);
-            }
-        }
     }
 
     static void unifyToVar(YType var, YType from) throws TypeException {
         occursCheck(from, var);
         if ((var.flags & FL_ORDERED_REQUIRED) != 0)
             requireOrdered(from);
-        if ((var.flags & FL_TAINTED_VAR) != 0)
-            from.flags |= FL_TAINTED_VAR;
-        
-        limitDepth(from, var.depth);
+        limitDepth(from, var.depth, var.flags & FL_TAINTED_VAR);
         var.ref = from;
     }
 
     static void unify(YType a, YType b) throws TypeException {
         a = a.deref();
         b = b.deref();
-        if (a == b) {
-        } else if (a.type == VAR) {
+        if (a == b)
+            return;
+        if (a.type == VAR) {
             unifyToVar(a, b);
-        } else if (b.type == VAR) {
+            return;
+        }
+        if (b.type == VAR) {
             unifyToVar(b, a);
-        } else if (a.type == JAVA) {
+            return;
+        }
+        if (a.type != b.type) {
+            YType opaque = null;
+            if (a.type >= OPAQUE_TYPES && (a.flags & FL_AMBIGUOUS_OPAQUE) != 0)
+                opaque = a;
+            else if (b.type >= OPAQUE_TYPES &&
+                     (b.flags & FL_AMBIGUOUS_OPAQUE) != 0)
+                opaque = b;
+            if (opaque != null) {
+                opaque.ref = (YType) opaque.allowedMembers.values().toArray()[0];
+                opaque.type = 0;
+                unify(a, b);
+                return;
+            }
+        }
+        if (a.type == JAVA) {
             unifyJava(a, b);
         } else if (b.type == JAVA) {
             unifyJava(b, a);
@@ -678,9 +763,18 @@ public class YetiType implements YetiParser {
             mismatch(a, b);
         } else if (a.type == STRUCT || a.type == VARIANT) {
             unifyMembers(a, b);
+        } else if (a.type == MAP &&
+                   (a.param[1].type ^ b.param[1].type) == (NUM ^ NONE) &&
+                   (a.param[1].type == NONE || b.param[1].type == NONE)) {
+            mismatch(a, b);
         } else {
             for (int i = 0, cnt = a.param.length; i < cnt; ++i)
                 unify(a.param[i], b.param[i]);
+            if (a.type >= OPAQUE_TYPES &&
+                (a.flags & b.flags & FL_AMBIGUOUS_OPAQUE) == 0) {
+                a.flags &= ~FL_AMBIGUOUS_OPAQUE;
+                b.flags &= ~FL_AMBIGUOUS_OPAQUE;
+            }
         }
     }
 
@@ -699,24 +793,25 @@ public class YetiType implements YetiParser {
 
     static YType mergeOrUnify(YType to, YType val) throws TypeException {
         YType t = JavaType.mergeTypes(to, val);
-        if (t != null) {
+        if (t != null)
             return t;
-        }
         unify(to, val);
         return to;
     }
 
     static Map copyTypeMap(Map types, Map free, Map known) {
-        Map result = new HashMap(types.size());
+        Map result = new IdentityHashMap(types.size());
         for (Iterator i = types.entrySet().iterator(); i.hasNext();) {
             Map.Entry entry = (Map.Entry) i.next();
             YType t = (YType) entry.getValue();
             YType nt = copyType(t, free, known);
             // looks like a hack, but fixing here avoids unnecessery refs
             if (t.field != nt.field) {
-                // don't accidently create new free var (nt.ref == null)
-                if (t.field != 0 && nt.ref != null)
-                    nt = mutableFieldRef(nt);
+                if (t.field != 0) {
+                    YType tmp = new YType(0);
+                    tmp.ref = nt;
+                    nt = tmp;
+                }
                 nt.field = t.field;
                 nt.flags = t.flags;
             }
@@ -725,37 +820,46 @@ public class YetiType implements YetiParser {
         return result;
     }
 
+    // free should be given null only in that special case,
+    // when it is desirable to copy non-polymorphic structures.
+    // Only known such case currently is in the opaqueCast function.
     static YType copyType(YType type_, Map free, Map known) {
-        YType type = type_.deref();
-        if (type.type == VAR) {
-            YType var = (YType) free.get(type);
-            return var == null ? type : var;
-        }
-        if (type.param.length == 0) {
+        YType res, type = type_.deref();
+        if (type.type == VAR)
+            return free != null && (res = (YType) free.get(type)) != null
+                    ? res : type;
+        if (type.param.length == 0 && type.type < OPAQUE_TYPES)
             return type_;
-        }
         YType copy = (YType) known.get(type);
-        if (copy != null) {
+        if (copy != null)
             return copy;
+        /* No structure without polymorphic flag variable shouldn't be copied.
+         * The getFreeVar should ensure that any variable reachable through
+         * such structure isn't free either.
+         */
+        if ((type.type == STRUCT || type.type == VARIANT) &&
+            free != null && !free.containsKey(type.param[0])) {
+            return type;
         }
         YType[] param = new YType[type.param.length];
         copy = new YType(type.type, param);
         copy.doc = type_;
-        YType res = copy;
+        res = copy;
         if (type_.field >= FIELD_NON_POLYMORPHIC) {
             res = mutableFieldRef(type_);
             res.field = type_.field;
             res.ref = copy;
         }
         known.put(type, res);
-        for (int i = param.length; --i >= 0;) {
+        for (int i = param.length; --i >= 0;)
             param[i] = copyType(type.param[i], free, known);
+        if (type.requiredMembers != null) {
+            copy.flags = type.flags & (FL_ANY_CASE | FL_FLEX_TYPEDEF);
+            copy.requiredMembers = copyTypeMap(type.requiredMembers, free, known);
         }
-        if (type.partialMembers != null) {
-            copy.partialMembers = copyTypeMap(type.partialMembers, free, known);
-        }
-        if (type.finalMembers != null) {
-            copy.finalMembers = copyTypeMap(type.finalMembers, free, known);
+        if (type.allowedMembers != null) {
+            copy.flags |= type.flags & FL_FLEX_TYPEDEF;
+            copy.allowedMembers = copyTypeMap(type.allowedMembers, free, known);
         }
         return res;
     }
@@ -763,8 +867,8 @@ public class YetiType implements YetiParser {
     static Map createFreeVars(YType[] freeTypes, int depth) {
         IdentityHashMap vars = new IdentityHashMap(freeTypes.length);
         for (int i = freeTypes.length; --i >= 0;) {
-            YType t = new YType(depth);
             YType free = freeTypes[i];
+            YType t = new YType(depth);
             t.flags = free.flags;
             t.field = free.field;
             vars.put(free, t);
@@ -779,10 +883,9 @@ public class YetiType implements YetiParser {
                 r[0] = scope;
                 return scope.binder.getRef(where.line);
             }
-            if (scope.closure != null) {
+            if (scope.closure != null)
                 return scope.closure.refProxy(
                             resolveRef(sym, where, scope.outer, r));
-            }
         }
         throw new CompileException(where, "Unknown identifier: " + sym);
     }
@@ -795,16 +898,15 @@ public class YetiType implements YetiParser {
         // provided/requested member lists.
         if (r[0].free != null && (ref.polymorph || r[0].free.length != 0)) {
             ref = ref.unshare();
-            Map vars = createFreeVars(r[0].free, depth);
+            Map vars = createFreeVars(r[0].free, depth + 1);
             ref.type = copyType(ref.type, vars, new IdentityHashMap());
         }
         return ref;
     }
 
     static YType resolveClass(String name, Scope scope, boolean shadow) {
-        if (name.indexOf('/') >= 0) {
+        if (name.indexOf('/') >= 0)
             return JavaType.typeOfClass(null, name);
-        }
         for (; scope != null; scope = scope.outer)
             if (scope.name == name) {
                 if (scope.importClass != null)
@@ -833,7 +935,7 @@ public class YetiType implements YetiParser {
             return new ClassBinding(t);
         }
         if (checkPerm != null &&
-            (CompileCtx.current().flags & YetiC.CF_NO_IMPORT) != 0)
+            (scope.ctx.compiler.globalFlags & Compiler.GF_NO_IMPORT) != 0)
             throw new CompileException(checkPerm, name + " is not imported");
         return new ClassBinding(JavaType.typeOfClass(packageName, name));
     }
@@ -890,19 +992,80 @@ public class YetiType implements YetiParser {
 
     private static final int RESTRICT_PROTECT = 1;
     private static final int RESTRICT_CONTRA  = 2;
-    static final int RESTRICT_ALL  = 4;
-    static final int RESTRICT_POLY = 8;
+    static final int RESTRICT_ALL  = 4; // known MONOMORPHIC
+    static final int RESTRICT_POLY = 8; // known POLYMORPHIC
+    static final int STRUCT_VAR    = 16;
 
-    static void getFreeVar(List vars, List deny, YType type,
-                           int flags, int depth) {
+    /*
+     * All free vars reachable through structures that have flag var denied
+     * must be denied. This is n:m relationship - structure can have many free
+     * vars reachable through it, and a free var can be reachable through many
+     * structures. Since suppressed var can be another structures flag var,
+     * circular dependencies can arise, therefore it can't be done in single
+     * step. Collecting relationships and actual suppression have to be
+     * separate actions. This implementation stores freevars in IdentityHashMap
+     * as keys. For deny, a special DENY object instance is associated.
+     * Otherwise, the structure deps (a linked list) will be the associated
+     * value.
+     *
+     * Each entry is representive of single struct var.
+     * Virtual struct vars will be created, when scope needs to be assigned
+     * to var that already has scope. In this case the link will point
+     * to the old scope and next to the current scope.
+     */
+    static class StructVar {
+        int deny; // -1 seen, 0 - unseen, 1 - denied
+        StructVar link; // concatenated (old) scope
+        StructVar next; // outer scope
+
+        StructVar(int deny, StructVar next) {
+            this.deny = deny;
+            this.next = next;
+        }
+    }
+
+    private static final StructVar DENY = new StructVar(1, null);
+
+    private static void addFreeVar(Map vars, StructVar deps,
+                                   YType t, int flags) {
+        if ((flags & RESTRICT_ALL) != 0) {
+            t.flags |= FL_TAINTED_VAR;
+            deps = DENY;
+        } else if ((flags & (RESTRICT_CONTRA | RESTRICT_POLY)) ==
+                        RESTRICT_CONTRA &&
+                   (t.flags & FL_TAINTED_VAR) != 0) {
+            deps = DENY;
+        }
+        Object old = vars.put(t, deps);
+        // Non-deny struct flag-var must always get a new instance
+        if (old == null && (flags & STRUCT_VAR) == 0 || deps == DENY)
+            return;
+        if (old == DENY) {
+            deps = DENY;
+        } else {
+            deps = new StructVar(0, deps);
+            deps.link = (StructVar) old;
+        }
+        vars.put(t, deps);
+    }
+
+    private static void scanFreeVar(Map vars, StructVar deps, YType type,
+                                    int flags, int depth) {
         if (type.seen)
             return;
-        if ((flags & RESTRICT_PROTECT) == 0 &&
-                type.field >= FIELD_NON_POLYMORPHIC)
-            flags |= RESTRICT_ALL;
+        if (type.field >= FIELD_NON_POLYMORPHIC)
+            flags |= (flags & RESTRICT_PROTECT) == 0
+                        ? RESTRICT_ALL : RESTRICT_CONTRA;
         YType t = type.deref();
         int tt = t.type;
-        if (tt != VAR) {
+        if (tt == STRUCT || tt == VARIANT) {
+            type.seen = true;
+            scanFreeVar(vars, deps, t.param[0], flags | STRUCT_VAR, depth);
+            deps = (StructVar) vars.get(t.param[0].deref());
+            for (int i = 1; i < t.param.length; ++i)
+                scanFreeVar(vars, deps, t.param[i], flags, depth);
+            type.seen = false;
+        } else if (tt != VAR) {
             if (tt == FUN)
                 flags |= RESTRICT_PROTECT;
             type.seen = true;
@@ -912,38 +1075,92 @@ public class YetiType implements YetiParser {
                     flags |= RESTRICT_CONTRA;
                 else if (i == 1 && tt == MAP && t.param[1].deref() != NO_TYPE)
                     flags |= (flags & RESTRICT_PROTECT) == 0
-                        ? RESTRICT_ALL : RESTRICT_CONTRA;
-                getFreeVar(vars, deny, t.param[i], flags, depth);
+                                ? RESTRICT_ALL : RESTRICT_CONTRA;
+                scanFreeVar(vars, deps, t.param[i], flags, depth);
             }
             type.seen = false;
         } else if (t.depth > depth) {
-            if ((flags & RESTRICT_ALL) != 0) {
-                t.flags |= FL_TAINTED_VAR;
-                vars = deny;
-            } else if ((flags & (RESTRICT_CONTRA | RESTRICT_POLY)) ==
-                            RESTRICT_CONTRA &&
-                       (t.flags & FL_TAINTED_VAR) != 0) {
-                vars = deny;
-            }
-            if (vars.indexOf(t) < 0)
-                vars.add(t);
+            addFreeVar(vars, deps, t, flags);
         } else if ((flags & RESTRICT_ALL) != 0 && t.depth == depth) {
             t.flags |= FL_TAINTED_VAR;
         }
     }
 
-    static void removeStructs(YType t, List vars) {
+    private static boolean purgeNonFree(StructVar var) {
+        var.deny = -1; // already seen
+        if (var.next != null && var.next.deny != 0 &&
+                (var.next.deny > 0 || purgeNonFree(var.next)) ||
+            var.link != null && var.link.deny != 0 &&
+                (var.link.deny > 0 || purgeNonFree(var.link))) {
+            var.deny = 1;
+            return true;
+        }
+        return false;
+    }
+
+    static YType[] getFreeVar(Map vars, YType type, int flags, int depth) {
+        scanFreeVar(vars, null, type, flags, depth);
+        if ((flags & RESTRICT_ALL) != 0)
+            return NO_PARAM;
+        YType[] tv = new YType[vars.size()];
+        StructVar[] v = new StructVar[tv.length];
+        int n = 0;
+        for (Iterator i = vars.entrySet().iterator(); i.hasNext(); ++n) {
+            Map.Entry e = (Map.Entry) i.next();
+            tv[n] = (YType) e.getKey();
+            StructVar var = v[n] = (StructVar) e.getValue();
+            if (var != null && var.deny == 0 && purgeNonFree(var))
+                var.deny = 1;
+        }
+        n = 0;
+        for (int i = 0; i < tv.length; ++i)
+            if (v[i] == null || v[i].deny <= 0)
+                tv[n++] = tv[i];
+        YType[] result = new YType[n];
+        System.arraycopy(tv, 0, result, 0, n);
+        return result;
+    }
+
+    static void getAllTypeVar(List vars, List structs, YType type,
+                              boolean freeze) {
+        if (type.seen)
+            return;
+        YType t = type.deref();
+        if (t.type != VAR) {
+            type.seen = true;
+            int i = -1;
+            if (structs != null && (t.type == STRUCT || t.type == VARIANT)) {
+                getAllTypeVar(structs, null, t.param[i = 0], false);
+                if (freeze) {
+                    if (t.allowedMembers == null)
+                        t.allowedMembers = t.requiredMembers;
+                    else
+                        t.requiredMembers = t.allowedMembers;
+                    t.flags &= ~FL_FLEX_TYPEDEF;
+                }
+            }
+            while (++i < t.param.length)
+                getAllTypeVar(vars, structs, t.param[i], freeze);
+            type.seen = false;
+        } else if (vars.indexOf(t) < 0)
+            vars.add(t);
+    }
+
+    static void removeStructs(YType t, Collection vars) {
         if (!t.seen) {
             if (t.type != VAR) {
                 int i = 0;
                 if (t.type == STRUCT || t.type == VARIANT) {
                     vars.remove(t.param[0].deref());
                     i = 1;
+                } else if (t.type == MAP) {
+                    // MAP marker type var shouldn't really cause
+                    // polymorphism restrictions - no real data associated.
+                    vars.remove(t.param[2].deref());
                 }
                 t.seen = true;
-                for (; i < t.param.length; ++i) {
-                   removeStructs(t.param[i], vars);
-                }
+                while (i < t.param.length)
+                    removeStructs(t.param[i++], vars);
                 t.seen = false;
             } else if (t.ref != null) {
                 removeStructs(t.ref, vars);
@@ -951,17 +1168,50 @@ public class YetiType implements YetiParser {
         }
     }
 
+    static void normalizeFlexType(YType t, boolean covariant) {
+        t = t.deref();
+        if (t.type != VAR && !t.seen) {
+            if ((t.flags & FL_FLEX_TYPEDEF) != 0 &&
+                (t.type == STRUCT || t.type == VARIANT)) {
+                Map members = t.requiredMembers;
+                if (t.type == STRUCT ^ members != null ^ covariant &&
+                    (members == null || t.allowedMembers == null)) {
+                    t.requiredMembers = t.allowedMembers;
+                    t.allowedMembers = members;
+                }
+                t.flags &= ~FL_FLEX_TYPEDEF;
+            }
+            t.seen = true;
+            for (int i = 0; i < t.param.length; ++i)
+                normalizeFlexType(t.param[i],
+                                  (i == 0 && t.type == FUN) ^ covariant);
+            t.seen = false;
+        }
+    }
+
+    // strip == false -> it instead introduces flex types
+    static void stripFlexTypes(YType t, boolean strip) {
+        if (t.type != VAR && !t.seen) {
+            if (strip)
+                t.flags &= ~FL_FLEX_TYPEDEF;
+            else if ((t.type == STRUCT || t.type == VARIANT) &&
+                     t.requiredMembers == null ^ t.allowedMembers == null)
+                t.flags |= FL_FLEX_TYPEDEF;
+            t.seen = true;
+            for (int i = 0; i < t.param.length; ++i)
+                stripFlexTypes(t.param[i].deref(), strip);
+            t.seen = false;
+        }
+    }
+
     static Scope bind(String name, YType valueType, Binder value,
                       int flags, int depth, Scope scope) {
-        List free = new ArrayList(), deny = new ArrayList();
-        getFreeVar(free, deny, valueType, flags, depth);
-        if (deny.size() != 0)
-            for (int i = free.size(); --i >= 0; )
-                if (deny.indexOf(free.get(i)) >= 0)
-                    free.remove(i);
         scope = new Scope(scope, name, value);
-        if ((flags & RESTRICT_ALL) == 0)
-            scope.free = (YType[]) free.toArray(new YType[free.size()]);
+        scope.free = getFreeVar(new IdentityHashMap(), valueType, flags, depth);
+        // If structure should be polymorphic,
+        // then at least it's flag var will be in free
+        if (scope.free.length == 0)
+            scope.free = null;
         return scope;
     }
 
@@ -971,23 +1221,166 @@ public class YetiType implements YetiParser {
     }
 
     static YType resolveTypeDef(Scope scope, String name, YType[] param,
-                                int depth, Node where) {
+                                int depth, TypeNode src, int def) {
         for (; scope != null; scope = scope.outer) {
-            if (scope.typeDef != null && scope.name == name) {
-                if (scope.typeDef.length - 1 != param.length) {
-                    throw new CompileException(where,
-                        "Type " + name + " expects "
-                        + (scope.typeDef.length == 2 ?  "1 parameter"
-                            : (scope.typeDef.length - 1) + " parameters")
+            YType[] typeDef;
+            if (scope.name == name && (typeDef = scope.typedef(true)) != null) {
+                if (typeDef.length - 1 != param.length)
+                    throw new CompileException(src, "Type " + name + " expects "
+                        + (typeDef.length == 2 ? "1 parameter"
+                            : (typeDef.length - 1) + " parameters")
                         + ", not " + param.length);
+                if (scope.free == null) { // shared typedef
+                    if (def >= 0 && def != TypeDef.UNSHARE)
+                        break; // normal typedef may not use shared ones
+                    return typeDef[0];
                 }
+                if (def == TypeDef.UNSHARE)
+                    break;
                 Map vars = createFreeVars(scope.free, depth);
                 for (int i = param.length; --i >= 0;)
-                    vars.put(scope.typeDef[i], param[i]);
-                return copyType(scope.typeDef[param.length], vars,
-                                new IdentityHashMap());
+                    vars.put(typeDef[i], param[i]);
+                YType res = copyType(typeDef[param.length], vars,
+                                     new IdentityHashMap());
+                if (src.exact)
+                    stripFlexTypes(res, true);
+                return res;
             }
         }
-        throw new CompileException(where, "Unknown type: " + name);
+        throw new CompileException(src, "Unknown type: " + name);
+    }
+
+    // Used by as cast to mark opaque types as ambigous, allowing them
+    // to later unify with their hidden (wrapped) type.
+    private static void prepareOpaqueCast(YType type, boolean[] known) {
+        if (type.seen)
+            return;
+        YType t = type.deref();
+        if (t.type != VAR) {
+            type.seen = true;
+            if (t.type >= OPAQUE_TYPES && known[t.type - OPAQUE_TYPES])
+                t.flags |= FL_AMBIGUOUS_OPAQUE;
+            for (int i = t.param.length; --i >= 0;)
+                prepareOpaqueCast(t.param[i], known);
+            type.seen = false;
+        }
+    }
+
+    private static Map opaqueMembers(Map src, Map members) {
+        if (src != null) {
+            src = new IdentityHashMap(src);
+            for (Iterator i = src.entrySet().iterator(); i.hasNext(); ) {
+                Map.Entry e = (Map.Entry) i.next();
+                Object t = members.get(e.getKey());
+                if (t != null)
+                    e.setValue(t);
+            }
+        }
+        return src;
+    }
+
+    // Creates a type from opaque where non-opaque parts are replaced with
+    // matching ones from the src. The idea is to hide parts of the src
+    // that are opaque types in the opaque argument.
+    private static YType deriveOpaque(YType src, YType opaque,
+                                      Map cache, boolean[] mask) {
+        opaque = opaque.deref();
+        YType res = (YType) cache.get(opaque);
+        if (res != null)
+            return res;
+        if (opaque.type >= OPAQUE_TYPES && mask[opaque.type - OPAQUE_TYPES]) {
+            cache.put(opaque, opaque);
+            return opaque;
+        }
+        YType s, t;
+        boolean hasOpaque = false;
+        if (opaque.type == STRUCT || opaque.type == VARIANT) {
+            res = new YType(src.type, NO_PARAM);
+            cache.put(opaque, res);
+            Map members = new IdentityHashMap(opaque.allowedMembers != null
+                    ? opaque.allowedMembers : opaque.requiredMembers);
+            for (Iterator i = members.entrySet().iterator(); i.hasNext(); ) {
+                Map.Entry e = (Map.Entry) i.next();
+                s = (YType) (src.allowedMembers != null ? src.allowedMembers
+                            : src.requiredMembers).get(e.getKey());
+                if (s == null) {
+                    i.remove();
+                    continue;
+                }
+                t = deriveOpaque(s.deref(), (YType) e.getValue(), cache, mask);
+                if (t != e.getValue()) {
+                    e.setValue(t);
+                    hasOpaque = true;
+                }
+            }
+            if (hasOpaque) {
+                res.allowedMembers = opaqueMembers(src.allowedMembers, members);
+                res.requiredMembers = opaqueMembers(src.requiredMembers, members);
+                structParam(res, res.requiredMembers != null
+                        ? res.requiredMembers : res.allowedMembers,
+                        src.param[0].deref());
+                if ((res.doc = opaque.doc()) == null)
+                    res.doc = src.doc();
+                return res;
+            }
+        } else if (opaque.type > PRIMITIVE_END && opaque.param.length != 0 &&
+                   opaque.param.length == src.param.length) {
+            res = new YType(src.type, new YType[src.param.length]);
+            cache.put(opaque, res);
+            for (int i = 0; i < res.param.length; ++i) {
+                s = src.param[i].deref();
+                t = deriveOpaque(s, opaque.param[i], cache, mask);
+                res.param[i] = t;
+                hasOpaque |= s != t;
+            }
+            if (hasOpaque) {
+                if ((res.doc = opaque.doc()) == null)
+                    res.doc = src.doc();
+                return res;
+            }
+        } else {
+            res = null;
+        }
+        if (res != null) {
+            res.type = VAR;
+            res.ref = src;
+            res.param = null;
+        }
+        cache.put(opaque, src);
+        return src;
+    }
+
+    static YType opaqueCast(YType from, YType to, Scope scope)
+            throws TypeException {
+        if (from.deref().type == VAR)
+            throw new TypeException("Illegal as cast from 'a to non-Java type");
+        YType t;
+        boolean[] allow_opaque = new boolean[scope.ctx.opaqueTypes.size() + 1];
+        for (; scope != null; scope = scope.outer) {
+            YType[] typeDef = scope.typedef(false);
+            if (typeDef != null) {
+                t = typeDef[typeDef.length - 1];
+                if (t.type >= OPAQUE_TYPES && t.allowedMembers != null)
+                    allow_opaque[t.type - OPAQUE_TYPES] = true;
+            }
+        }
+        to = to.deref();
+        t = copyType(to, null, new IdentityHashMap());
+        prepareOpaqueCast(t, allow_opaque);
+        unify(from, t);
+        return deriveOpaque(from.deref(), to, new IdentityHashMap(),
+                            allow_opaque);
+    }
+
+    static YType withDoc(YType t, String doc) {
+        if (doc == null)
+            return t;
+        if (t.type > 0 && t.type <= PRIMITIVE_END) {
+            YType tmp = t;
+            t = new YType(0);
+            t.ref = tmp;
+        }
+        t.doc = doc;
+        return t;
     }
 }

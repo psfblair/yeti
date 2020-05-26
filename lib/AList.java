@@ -3,7 +3,7 @@
 /*
  * Yeti core library.
  *
- * Copyright (c) 2007,2008,2009 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -49,6 +49,8 @@ public abstract class AList extends AIter implements Comparable, Coll {
     
     public abstract AList smap(Fun f);
 
+    public abstract AList take(int from, int count);
+
     public AList map(Fun f) {
         return new MapList(this, f);
     }
@@ -66,5 +68,19 @@ public abstract class AList extends AIter implements Comparable, Coll {
 
     public AList asList() {
         return this;
+    }
+
+    public void removeAll(AList keys) {
+    }
+
+    public String toString() {
+        StringBuffer buf = new StringBuffer("[");
+        buf.append(Core.show(first()));
+        for (AIter i = rest(); i != null; i = i.next()) {
+            buf.append(',');
+            buf.append(Core.show(i.first()));
+        }
+        buf.append(']');
+        return buf.toString();
     }
 }

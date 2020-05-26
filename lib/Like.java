@@ -34,13 +34,13 @@ import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
 final class LikeMatcher extends Fun {
-    private Matcher m;
+    private final Matcher m;
 
     LikeMatcher(Matcher m) {
         this.m = m;
     }
 
-    public Object apply(Object _) {
+    public Object apply(Object __) {
         if (!m.find()) {
             return new MList();
         }

@@ -1,9 +1,9 @@
 // ex: se sts=4 sw=4 expandtab:
 
-/*
- * Yeti core library.
+/**
+ * Yeti random number generator.
  *
- * Copyright (c) 2007,2008 Madis Janson
+ * Copyright (c) 2007-2014 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,13 +30,25 @@
  */
 package yeti.lang;
 
-/** Yeti core library - LMList. */
-public final class LMList extends LList {
-    public LMList(Object first, AList rest) {
-        super(first, rest);
+import java.util.Random;
+
+class RandomInt extends Fun {
+    private static Random rnd = null;
+
+    public Object apply(Object x) {
+        Random rnd = initRandom();
+        Num n = (Num) x;
+        if (n.rCompare(0x7fffffffL) > 0)
+            return new IntNum(rnd.nextInt(n.intValue()));
+        if (n.rCompare(Long.MAX_VALUE) > 0)
+            return new IntNum((long) (n.doubleValue() * rnd.nextDouble()));
+        // XXX
+        return new FloatNum(Math.floor(n.doubleValue() * rnd.nextDouble()));
     }
 
-    public AList rest() {
-        return rest == null || rest.isEmpty() ? null : rest;
+    static synchronized Random initRandom() {
+        if (rnd == null)
+            rnd = new Random();
+        return rnd;
     }
 }

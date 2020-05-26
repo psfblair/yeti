@@ -1,0 +1,68 @@
+All path matches described below will be done on canonical names
+in case-insensitive manner. The path separators should be unified to '/'
+before matching. The generated module classnames should be always
+in lower case.
+
+Deriving NAME IMPLICITLY is done before deriving SOURCEPATH implicitly.
+This means that it must be done in the analyze phase after parsing.
+
+The module/program NAME IS always defined:
+  * EXPLICITLY with module/program declaration.
+  * IMPLICITLY from the source file name omitting the ".yeti" suffix
+    for a program.
+    If SOURCEPATH is explicitly declared, the package part will be derived
+    by matching the start of the canonical path with SOURCEPATH entries and
+    adding the remaining path as package name.
+    Shortest package name will be chosen on multiple matches.
+    Root package ("") will used if there are no matches.
+  Explicitly declared NAME in the form foo.bar.baz must be in source file
+  named baz.yeti. If SOURCEPATH is explicitly declared, it's path must
+  match SOURCEPATH-ENTRY/foo/bar/baz.yeti OR SOURCEPATH-ENTRY/baz.yeti
+  for some SOURCEPATH entry. Alternatively NO SOURCEPATH entry should
+  match the start of the source file path.
+  Error must be given on incorrectly named modules/programs.
+
+SOURCEPATH IS always defined:
+  * EXPLICITLY with compiler options (may contain multiple directories)
+  * IMPLICITLY a single directory
+    + If the the canonical path ends with /foo/bar/baz(.yeti) matching
+      the module/program NAME foo.bar.baz (case insensitive),
+      the SOURCEPATH is the preceding part of the canonical path.
+    + Otherwise the SOURCEPATH is the directory of source file.
+
+SOURCEPATH derivation needs to know the NAME and the canonical path
+of the source file for NAME. Since NAME can be certainly known only after
+parse phase, the SOURCEPATH derivation should also be done after parse,
+but before loading any dependant modules (where the SOURCEPATH would be
+already needed). This means that the source loader should return the
+canonical path additionally to the source code, which has to be passed to
+the YetiAnalyzer.toCode().
+
+When load foo.bar.baz is done the source file is searched with following rules:
+  1) From lookup/compilation cache.
+  2) From each SOURCEPATH entry in the form
+     SOURCEPATH-ENTRY/foo/bar/baz.yeti
+  3) If not found in previous step and the NAME contained dots,
+     SOURCEPATH-ENTRY/baz.yeti
+  The SOURCEPATH entry of the current compilation should be searched first?
+  Probably not, either the path is explicit or contains single element,
+  and if it's explicit, more consistent build is achieved when always
+  searching in the same order.
+  The load should fail after parse phase, if the source is not a module.
+  There the toCode should get as parameter a flag about expecting module
+  or program.
+
+Additionally the class foo/bar/baz.class should be searched from the classpath.
+If neither the source or class is found, the module not found error should be
+given.
+
+When compilation of path foo/bar/baz.yeti is requested:
+  It will be tried to read using the given source reader, ignoring the
+  source path.
+
+If both are found, the modification times should be compared.
+If the source file is newer or there is no class file, the module should
+be recompiled, otherwise the existing class file should be used.
+
+The module classes already compiled or looked up in the same compilation
+session should be used without additional lookups.

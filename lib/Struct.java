@@ -61,10 +61,20 @@ public interface Struct {
     String name(int field);
 
     /**
+     * Field name by field index for equality operations.
+     * If the field should not participate in equality comparisions,
+     * then eqName should return the empty string literal "" instance
+     * (so that the returned value == "" is true).
+     */
+    String eqName(int field);
+
+    /**
      * Returns reference struct or field value.
      * If the field is immutable, then the field value will be returned
      * and index[at] is assigned -1. Otherwise a reference struct is
      * returned and index[at] is assigned a field index in the returned struct.
+     * The index[at + 1] is assigned 1 when the field shouldn't participate
+     * in equality comparisions (eqName(fielt) == ""), and 0 otherwise.
      */
     Object ref(int field, int[] index, int at);
 }

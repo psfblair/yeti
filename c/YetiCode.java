@@ -3,7 +3,7 @@
 /*
  * Yeti language compiler java bytecode generator.
  *
- * Copyright (c) 2007,2008,2009,2010 Madis Janson
+ * Copyright (c) 2007-2013 Madis Janson
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,20 +28,14 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
 package yeti.lang.compiler;
 
-import yeti.renamed.asm3.*;
-import java.io.*;
+import yeti.renamed.asmx.*;
 import java.util.Map;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Arrays;
-import java.util.List;
 import java.util.ArrayList;
-import java.net.URL;
-import java.net.URLClassLoader;
-import yeti.lang.Fun;
+import java.util.List;
 import yeti.lang.Num;
 import yeti.lang.RatNum;
 import yeti.lang.IntNum;
@@ -54,8 +48,22 @@ final class Constants implements Opcodes {
     int anonymousClassCounter;
     String sourceName;
     Ctx ctx;
+    List unstoredClasses = new ArrayList();
 
-    void constField(int mode, String name, Code code, String descr) {
+    Constants(String sourceName, String sourceFile) {
+        if (sourceFile != null) {
+        } else if (sourceName != null) {
+            int p = sourceName.lastIndexOf('/');
+            if (p < 0)
+                p = sourceName.lastIndexOf('\\');
+            sourceFile = p < 0 ? sourceName : sourceName.substring(p + 1);
+        } else {
+            sourceFile = "<>";
+        }
+        this.sourceName = sourceFile;
+    }
+
+    private void constField(int mode, String name, Code code, String descr) {
         ctx.cw.visitField(mode, name, descr, null, null).visitEnd();
         if (sb == null)
             sb = ctx.newMethod(ACC_STATIC, "<clinit>", "()V");
@@ -84,6 +92,8 @@ final class Constants implements Opcodes {
 
     // first value in array must be empty
     void stringArray(Ctx ctx_, String[] array) {
+        if (sb == null)
+            sb = ctx.newMethod(ACC_STATIC, "<clinit>", "()V");
         array[0] = "Strings";
         List key = Arrays.asList(array);
         String name = (String) constants.get(key);
@@ -110,8 +120,6 @@ final class Constants implements Opcodes {
     // generates [Ljava/lang/String;[Z into stack, using constant cache
     void structInitArg(Ctx ctx_, StructField[] fields,
                        int fieldCount, boolean nomutable) {
-        if (sb == null)
-            sb = ctx.newMethod(ACC_STATIC, "<clinit>", "()V");
         String[] fieldNameArr = new String[fieldCount + 1];
         char[] mutableArr = new char[fieldNameArr.length];
         mutableArr[0] = '@';
@@ -150,352 +158,8 @@ final class Constants implements Opcodes {
     }
 }
 
-final class CompileCtx implements Opcodes {
-    static final ThreadLocal currentCompileCtx = new ThreadLocal();
-    private static ClassLoader JAVAC;
-
-    CodeWriter writer;
-    private SourceReader reader;
-    private Map compiled = new HashMap();
-    private List warnings = new ArrayList();
-    private String currentSrc;
-    private Map definedClasses = new HashMap();
-    private List unstoredClasses;
-    List postGen = new ArrayList();
-    boolean isGCJ;
-    ClassFinder classPath;
-    Map types = new HashMap();
-    String[] preload = new String[] { "yeti/lang/std", "yeti/lang/io" };
-    int classWriterFlags = ClassWriter.COMPUTE_FRAMES;
-    int flags;
-
-    CompileCtx(SourceReader reader, CodeWriter writer) {
-        this.reader = reader;
-        this.writer = writer;
-        // GCJ bytecode verifier is overly strict about INVOKEINTERFACE
-        isGCJ = System.getProperty("java.vm.name").indexOf("gcj") >= 0;
-//            isGCJ = true;
-    }
-
-    static CompileCtx current() {
-        return (CompileCtx) currentCompileCtx.get();
-    }
-
-    void warn(CompileException ex) {
-        ex.fn = currentSrc;
-        warnings.add(ex);
-    }
-
-    String createClassName(Ctx ctx, String outerClass, String nameBase) {
-        boolean anon = nameBase == "" && ctx != null;
-        String name = nameBase = outerClass + '$' + nameBase;
-        if (anon) {
-            do {
-                name = nameBase + ctx.constants.anonymousClassCounter++;
-            } while (definedClasses.containsKey(name));
-        } else {
-            for (int i = 0; definedClasses.containsKey(name); ++i)
-                name = nameBase + i;
-        }
-        return name;
-    }
-
-    public void enumWarns(Fun f) {
-        for (int i = 0, cnt = warnings.size(); i < cnt; ++i) {
-            f.apply(warnings.get(i));
-        }
-    }
-
-    private void generateModuleFields(Map fields, Ctx ctx, Map ignore) {
-        if (ctx.compilation.isGCJ)
-            ctx.typeInsn(CHECKCAST, "yeti/lang/Struct");
-        for (Iterator i = fields.entrySet().iterator(); i.hasNext();) {
-            Map.Entry entry = (Map.Entry) i.next();
-            String name = (String) entry.getKey();
-            if (ignore.containsKey(name))
-                continue;
-            String jname = Code.mangle(name);
-            String type = Code.javaType((YType) entry.getValue());
-            String descr = 'L' + type + ';';
-            ctx.cw.visitField(ACC_PUBLIC | ACC_STATIC, jname,
-                    descr, null, null).visitEnd();
-            ctx.insn(DUP);
-            ctx.ldcInsn(name);
-            ctx.methodInsn(INVOKEINTERFACE, "yeti/lang/Struct",
-                "get", "(Ljava/lang/String;)Ljava/lang/Object;");
-            ctx.typeInsn(CHECKCAST, type);
-            ctx.fieldInsn(PUTSTATIC, ctx.className, jname, descr);
-        }
-    }
-
-    String compileAll(String[] sources, int flags, String[] javaArg)
-            throws Exception {
-        String[] fn = new String[1];
-        List java = null;
-        int i, yetiCount = 0;
-        for (i = 0; i < sources.length; ++i)
-            if (sources[i].endsWith(".java")) {
-                fn[0] = sources[i];
-                char[] s = reader.getSource(fn, true);
-                new JavaSource(fn[0], s, classPath.parsed);
-                if (java == null) {
-                    java = new ArrayList();
-                    boolean debug = true;
-                    for (int j = 0; j < javaArg.length; ++j) {
-                        if (javaArg[j].startsWith("-g"))
-                            debug = false;
-                        java.add(javaArg[j]);
-                    }
-                    if (!java.contains("-encoding")) {
-                        java.add("-encoding");
-                        java.add("utf-8");
-                    }
-                    if (debug)
-                        java.add("-g");
-                    if (classPath.pathStr.length() != 0) {
-                        java.add("-cp");
-                        java.add(classPath.pathStr);
-                    }
-                }
-                java.add(sources[i]);
-            } else {
-                sources[yetiCount++] = sources[i];
-            }
-        String mainClass = null;
-        for (i = 0; i < yetiCount; ++i) {
-            String className = compile(sources[i], flags);
-            if (!types.containsKey(className))
-                mainClass = className;
-        }
-        if (java != null) {
-            javaArg = (String[]) java.toArray(new String[javaArg.length]);
-            Class javac = null;
-            try {
-                javac = Class.forName("com.sun.tools.javac.Main", true,
-                                      getClass().getClassLoader());
-            } catch (Exception ex) {
-            }
-            java.lang.reflect.Method m;
-            try {
-                if (javac == null) { // find javac...
-                    synchronized (currentCompileCtx) {
-                        if (JAVAC == null)
-                            JAVAC = new URLClassLoader(new URL[] {
-                                new URL("file://" + new File(System.getProperty(
-                                             "java.home"), "/../lib/tools.jar")
-                                    .getAbsolutePath().replace('\\', '/')) });
-                    }
-                    javac =
-                        Class.forName("com.sun.tools.javac.Main", true, JAVAC);
-                }
-                m = javac.getMethod("compile", new Class[] { String[].class });
-            } catch (Exception ex) {
-                throw new CompileException(null, "Couldn't find Java compiler");
-            }
-            Object o = javac.newInstance();
-            if (((Integer) m.invoke(o, new Object[] {javaArg})).intValue() != 0)
-                throw new CompileException(null,
-                            "Error while compiling Java sources");
-        }
-        return yetiCount != 0 ? mainClass : "";
-    }
-
-    String compile(String sourceName, int flags) throws Exception {
-        String className = (String) compiled.get(sourceName);
-        if (className != null)
-            return className;
-        String[] srcName = { sourceName };
-        char[] src;
-        try {
-            src = reader.getSource(srcName, false);
-        } catch (IOException ex) {
-            throw new CompileException(null, ex.getMessage());
-        }
-        int dot = srcName[0].lastIndexOf('.');
-        className = dot < 0 ? srcName[0] : srcName[0].substring(0, dot);
-        dot = className.lastIndexOf('.');
-        if (dot >= 0) {
-            dot = Math.max(className.indexOf('/', dot),
-                           className.indexOf('\\', dot));
-            if (dot >= 0)
-                className = className.substring(dot + 1);
-        }
-        compile(srcName[0], className, src, flags);
-        className = (String) compiled.get(srcName[0]);
-        compiled.put(sourceName, className);
-        return className;
-    }
-
-    ModuleType compile(String sourceName, String name,
-                          char[] code, int flags) throws Exception {
-        // TODO
-        // The circular dep check doesn't work always, as the SourceReader +
-        // compile(sourceName, flags) gets the proposed classname wrong
-        // when the sourcereader modifies the path - even when the original
-        // sourceName contained correct name base for classname provided
-        // by the YetiTypeAttr when loading a module.
-        // The source reading logic is a mess and needs a refactoring, badly.
-        if (definedClasses.containsKey(name)) {
-            throw new CompileException(0, 0, (definedClasses.get(name) == null
-                ? "Circular module dependency: "
-                : "Duplicate module name: ") + name.replace('/', '.'));
-        }
-        boolean module = (flags & YetiC.CF_COMPILE_MODULE) != 0;
-        RootClosure codeTree;
-        Object oldCompileCtx = currentCompileCtx.get();
-        currentCompileCtx.set(this);
-        String oldCurrentSrc = currentSrc;
-        currentSrc = sourceName;
-        if (flags != 0)
-            this.flags = flags;
-        List oldUnstoredClasses = unstoredClasses;
-        unstoredClasses = new ArrayList();
-        try {
-            try {
-                codeTree = YetiAnalyzer.toCode(sourceName, name, code,
-                                               this, preload);
-            } finally {
-                currentCompileCtx.set(oldCompileCtx);
-            }
-            if (codeTree.moduleType.name != null)
-                name = codeTree.moduleType.name;
-            module = module || codeTree.isModule;
-            Constants constants = new Constants();
-            constants.sourceName = sourceName == null ? "<>" : sourceName;
-            Ctx ctx = new Ctx(this, constants, null, null).newClass(ACC_PUBLIC
-                    | ACC_SUPER | (module && codeTree.moduleType.deprecated
-                        ? ACC_DEPRECATED : 0), name,
-                   (flags & YetiC.CF_EVAL) != 0 ? "yeti/lang/Fun" : null, null);
-            constants.ctx = ctx;
-            if (module) {
-                ctx.cw.visitField(ACC_PRIVATE | ACC_STATIC, "$",
-                                  "Ljava/lang/Object;", null, null).visitEnd();
-                ctx.cw.visitField(ACC_PRIVATE | ACC_STATIC,
-                                  "_$", "Z", null, Boolean.FALSE);
-                ctx = ctx.newMethod(ACC_PUBLIC | ACC_STATIC | ACC_SYNCHRONIZED,
-                                    "eval", "()Ljava/lang/Object;");
-                ctx.fieldInsn(GETSTATIC, name, "_$", "Z");
-                Label eval = new Label();
-                ctx.jumpInsn(IFEQ, eval);
-                ctx.fieldInsn(GETSTATIC, name, "$",
-                                     "Ljava/lang/Object;");
-                ctx.insn(ARETURN);
-                ctx.visitLabel(eval);
-                Code codeTail = codeTree.body;
-                while (codeTail instanceof SeqExpr)
-                    codeTail = ((SeqExpr) codeTail).result;
-                if (codeTail instanceof StructConstructor) {
-                    ((StructConstructor) codeTail).publish();
-                    codeTree.gen(ctx);
-                    codeTree.moduleType.directFields =
-                        ((StructConstructor) codeTail).getDirect(constants);
-                } else {
-                    codeTree.gen(ctx);
-                }
-                ctx.cw.visitAttribute(new YetiTypeAttr(codeTree.moduleType));
-                if (codeTree.type.type == YetiType.STRUCT) {
-                    generateModuleFields(codeTree.type.finalMembers, ctx,
-                                         codeTree.moduleType.directFields);
-                }
-                ctx.insn(DUP);
-                ctx.fieldInsn(PUTSTATIC, name, "$",
-                                     "Ljava/lang/Object;");
-                ctx.intConst(1);
-                ctx.fieldInsn(PUTSTATIC, name, "_$", "Z");
-                ctx.insn(ARETURN);
-                types.put(name, codeTree.moduleType);
-            } else if ((flags & YetiC.CF_EVAL) != 0) {
-                ctx.createInit(ACC_PUBLIC, "yeti/lang/Fun");
-                ctx = ctx.newMethod(ACC_PUBLIC, "apply",
-                                    "(Ljava/lang/Object;)Ljava/lang/Object;");
-                codeTree.gen(ctx);
-                ctx.insn(ARETURN);
-            } else {
-                ctx = ctx.newMethod(ACC_PUBLIC | ACC_STATIC, "main",
-                                    "([Ljava/lang/String;)V");
-                ctx.localVarCount++;
-                ctx.load(0).methodInsn(INVOKESTATIC, "yeti/lang/Core",
-                                            "setArgv", "([Ljava/lang/String;)V");
-                Label codeStart = new Label();
-                ctx.visitLabel(codeStart);
-                codeTree.gen(ctx);
-                ctx.insn(POP);
-                ctx.insn(RETURN);
-                Label exitStart = new Label();
-                ctx.tryCatchBlock(codeStart, exitStart, exitStart,
-                                       "yeti/lang/ExitError");
-                ctx.visitLabel(exitStart);
-                ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/ExitError",
-                                    "getExitCode", "()I");
-                ctx.methodInsn(INVOKESTATIC, "java/lang/System",
-                                    "exit", "(I)V");
-                ctx.insn(RETURN);
-            }
-            ctx.closeMethod();
-            constants.close();
-            compiled.put(sourceName, name);
-            write();
-            unstoredClasses = oldUnstoredClasses;
-            classPath.existsCache.clear();
-            currentSrc = oldCurrentSrc;
-            return codeTree.moduleType;
-        } catch (CompileException ex) {
-            if (ex.fn == null)
-                ex.fn = sourceName;
-            throw ex;
-        }
-    }
-
-    void addClass(String name, Ctx ctx) {
-        if (definedClasses.put(name, ctx) != null) {
-            throw new IllegalStateException("Duplicate class: "
-                                            + name.replace('/', '.'));
-        }
-        if (ctx != null) {
-            unstoredClasses.add(ctx);
-        }
-    }
-
-    private void write() throws Exception {
-        if (writer == null)
-            return;
-        int i, cnt = postGen.size();
-        for (i = 0; i < cnt; ++i)
-            ((Runnable) postGen.get(i)).run();
-        postGen.clear();
-        cnt = unstoredClasses.size();
-        for (i = 0; i < cnt; ++i) {
-            Ctx c = (Ctx) unstoredClasses.get(i);
-            definedClasses.put(c.className, "");
-            String name = c.className + ".class";
-            byte[] content = c.cw.toByteArray();
-            writer.writeClass(name, content);
-            classPath.define(name, content);
-        }
-        unstoredClasses = null;
-    }
-}
-
-final class YClassWriter extends ClassWriter {
-    YClassWriter(int flags) {
-        super(COMPUTE_MAXS | flags);
-    }
-
-    // Overload to avoid using reflection on non-standard-library classes
-    protected String getCommonSuperClass(String type1, String type2) {
-        if (type1.equals(type2)) {
-            return type1;
-        }
-        if (type1.startsWith("java/lang/") && type2.startsWith("java/lang/") ||
-            type1.startsWith("yeti/lang/") && type2.startsWith("yeti/lang/")) {
-            return super.getCommonSuperClass(type1, type2);
-        }
-        return "java/lang/Object";
-    }
-}
-
 final class Ctx implements Opcodes {
-    CompileCtx compilation;
+    Compiler compilation;
     String className;
     ClassWriter cw;
     private MethodVisitor m;
@@ -508,7 +172,7 @@ final class Ctx implements Opcodes {
     int lastLine;
     int tainted; // you are inside loop, natural laws a broken
 
-    Ctx(CompileCtx compilation, Constants constants,
+    Ctx(Compiler compilation, Constants constants,
             ClassWriter writer, String className) {
         this.compilation = compilation;
         this.constants = constants;
@@ -516,15 +180,26 @@ final class Ctx implements Opcodes {
         this.className = className;
     }
 
-    Ctx newClass(int flags, String name, String extend, String[] interfaces) {
+    Ctx newClass(int flags, String name, String extend,
+                 String[] interfaces, int line) {
         Ctx ctx = new Ctx(compilation, constants,
                           new YClassWriter(compilation.classWriterFlags), name);
         ctx.usedMethodNames = new HashMap();
-        ctx.cw.visit(V1_4, flags, name, null,
+        ctx.cw.visit(V1_6, flags, name, null,
                 extend == null ? "java/lang/Object" : extend, interfaces);
         ctx.cw.visitSource(constants.sourceName, null);
-        compilation.addClass(name, ctx);
+        compilation.addClass(name, ctx, line);
         return ctx;
+    }
+
+    String methodName(String name) {
+        Map used = usedMethodNames;
+        if (name == null)
+            name = "_" + used.size();
+        else if (used.containsKey(name) || name.startsWith("_"))
+            name += used.size();
+        used.put(name, null);
+        return name;
     }
 
     Ctx newMethod(int flags, String name, String type) {
@@ -551,7 +226,7 @@ final class Ctx implements Opcodes {
         MethodVisitor m = cw.visitMethod(mod, "<init>", "()V", null, null);
         // super()
         m.visitVarInsn(ALOAD, 0);
-        m.visitMethodInsn(INVOKESPECIAL, parent, "<init>", "()V");
+        m.visitMethodInsn(INVOKESPECIAL, parent, "<init>", "()V", false);
         m.visitInsn(RETURN);
         m.visitMaxs(0, 0);
         m.visitEnd();
@@ -562,22 +237,10 @@ final class Ctx implements Opcodes {
             insn(n + 3);
         } else {
             insn(-1);
-            if (n >= -32768 && n <= 32767) {
+            if (n >= -32768 && n <= 32767)
                 m.visitIntInsn(n >= -128 && n <= 127 ? BIPUSH : SIPUSH, n);
-            } else {
+            else
                 m.visitLdcInsn(new Integer(n));
-            }
-        }
-    }
-
-    void genInt(Code arg, int line) {
-        if (arg instanceof NumericConstant) {
-            intConst(((NumericConstant) arg).num.intValue());
-        } else {
-            arg.gen(this);
-            visitLine(line);
-            typeInsn(CHECKCAST, "yeti/lang/Num");
-            methodInsn(INVOKEVIRTUAL, "yeti/lang/Num", "intValue", "()I");
         }
     }
 
@@ -632,12 +295,15 @@ final class Ctx implements Opcodes {
     }
 
     void typeInsn(int opcode, String type) {
-        if (opcode == CHECKCAST &&
-            (lastInsn == -2 && type.equals(lastType) ||
-             lastInsn == ACONST_NULL)) {
-            return; // no cast necessary
+        if (opcode == CHECKCAST) {
+            if (lastInsn == -2 && type.equals(lastType) ||
+                lastInsn == ACONST_NULL)
+                return; // no cast necessary
+            insn(-2);
+            lastType = type;
+        } else {
+            insn(-1);
         }
-        insn(-1);
         m.visitTypeInsn(opcode, type);
     }
 
@@ -650,7 +316,7 @@ final class Ctx implements Opcodes {
 
     void visitInit(String type, String descr) {
         insn(-2);
-        m.visitMethodInsn(INVOKESPECIAL, type, "<init>", descr);
+        m.visitMethodInsn(INVOKESPECIAL, type, "<init>", descr, false);
         lastType = type;
     }
 
@@ -659,8 +325,7 @@ final class Ctx implements Opcodes {
         lastType = type;
     }
 
-    void fieldInsn(int opcode, String owner,
-                              String name, String desc) {
+    void fieldInsn(int opcode, String owner, String name, String desc) {
         if (owner == null || name == null || desc == null)
             throw new IllegalArgumentException("fieldInsn(" + opcode +
                         ", " + owner + ", " + name + ", " + desc + ")");
@@ -673,10 +338,9 @@ final class Ctx implements Opcodes {
         }
     }
 
-    void methodInsn(int opcode, String owner,
-                               String name, String desc) {
+    void methodInsn(int opcode, String owner, String name, String desc) {
         insn(-1);
-        m.visitMethodInsn(opcode, owner, name, desc);
+        m.visitMethodInsn(opcode, owner, name, desc, opcode == INVOKEINTERFACE);
     }
 
     void visitApply(Code arg, int line) {
@@ -684,7 +348,7 @@ final class Ctx implements Opcodes {
         insn(-1);
         visitLine(line);
         m.visitMethodInsn(INVOKEVIRTUAL, "yeti/lang/Fun",
-                "apply", "(Ljava/lang/Object;)Ljava/lang/Object;");
+                "apply", "(Ljava/lang/Object;)Ljava/lang/Object;", false);
     }
 
     void jumpInsn(int opcode, Label label) {
@@ -715,11 +379,10 @@ final class Ctx implements Opcodes {
     void switchInsn(int min, int max, Label dflt,
                          int[] keys, Label[] labels) {
         insn(-1);
-        if (keys == null) {
+        if (keys == null)
             m.visitTableSwitchInsn(min, max, dflt, labels);
-        } else {
+        else
             m.visitLookupSwitchInsn(dflt, keys, labels);
-        }
     }
 
     void constant(Object key, Code code) {
@@ -727,12 +390,10 @@ final class Ctx implements Opcodes {
     }
 
     void popn(int n) {
-        if ((n & 1) != 0) {
+        if ((n & 1) != 0)
             insn(POP);
-        }
-        for (; n >= 2; n -= 2) {
+        for (; n >= 2; n -= 2)
             insn(POP2);
-        }
     }
 }
 
@@ -748,7 +409,17 @@ abstract class Code implements Opcodes {
     // Comparision operators use this for some optimisation.
     static final int EMPTY_LIST = 0x10;
 
-    // no capturing
+    // Check for no capturing. XXX WARNING.
+    // You should really do DIRECT_BIND queries only BEFORE using those
+    // bindings (that's, at the start of closure gen or earlier) OR at
+    // least ensure having the capture set copied, as Capture instances
+    // mark themselves uncaptured when they discover being a direct binding
+    // during flagop. This could be a problem when the binding ref was
+    // generated as captured earlier AND the call site omits later
+    // the ones that became uncaptured by DIRECT_BIND flagop. If it should be
+    // discovered to be unavoidable, a special "almost-uncaptured" Capture
+    // state could be introduced that would affect only Capture.gen().
+    // Note that most closures will do DIRECT_BIND query by mergeCaptures.
     static final int DIRECT_BIND = 0x20;
 
     // normal constant is also pure and don't need capturing
@@ -812,6 +483,17 @@ abstract class Code implements Opcodes {
         ctx.fieldInsn(GETSTATIC, "java/lang/Boolean",
                 "TRUE", "Ljava/lang/Boolean;");
         ctx.jumpInsn(ifTrue ? IF_ACMPEQ : IF_ACMPNE, to);
+    }
+
+    // should be used, if only int is ever needed
+    void genInt(Ctx ctx, int line, boolean longValue) {
+        gen(ctx);
+        ctx.visitLine(line);
+        ctx.typeInsn(CHECKCAST, "yeti/lang/Num");
+        if (longValue)
+            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/Num", "longValue", "()J");
+        else
+            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/Num", "intValue", "()I");
     }
 
     // Used to tell that this code is at tail position in a function.
@@ -912,6 +594,14 @@ abstract class BindRef extends Code {
         return null;
     }
 
+    // As what java types the values of this should be captured.
+    // Same as CaptureWrapper.captureType()
+    String captureType() {
+        if (origin != null)
+            return ((BindExpr) binder).captureType();
+        return 'L' + javaType(type) + ';';
+    }
+
     // unshare. normally bindrefs are not shared
     // Capture shares refs and therefore has to copy for unshareing
     BindRef unshare() {
@@ -960,28 +650,51 @@ final class BindWrapper extends BindRef {
 }
 
 class StaticRef extends BindRef {
-    String className;
-    protected String funFieldName;
-    int line;
+    private String className;
+    private String fieldName;
+    private int line;
+    boolean method;
    
     StaticRef(String className, String fieldName, YType type,
               Binder binder, boolean polymorph, int line) {
         this.type = type;
         this.binder = binder;
         this.className = className;
-        this.funFieldName = fieldName;
+        this.fieldName = fieldName;
         this.polymorph = polymorph;
         this.line = line;
+    }
+
+    StaticRef(String fun, YType type, boolean polymorph, int line) {
+        this("yeti/lang/std", fun, type, null, polymorph, line);
+        method = true;
     }
     
     void gen(Ctx ctx) {
         ctx.visitLine(line);
-        ctx.fieldInsn(GETSTATIC, className, funFieldName,
-                             'L' + javaType(type) + ';');
+        String t = javaType(type);
+        if (method) {
+            ctx.methodInsn(INVOKESTATIC, className, fieldName, "()L" + t + ';');
+            ctx.forceType(t);
+        } else {
+            ctx.fieldInsn(GETSTATIC, className, fieldName, 'L' + t + ';');
+        }
+    }
+
+    Object valueKey() {
+        return (method ? "MREF:" : "SREF:") + className + '.' + fieldName;
     }
 
     boolean flagop(int fl) {
-        return (fl & DIRECT_BIND) != 0;
+        return (fl & (DIRECT_BIND | CONST)) != 0;
+    }
+
+    static boolean std(Code ref, String fun) {
+        if (!(ref instanceof StaticRef))
+            return false;
+        StaticRef r = (StaticRef) ref;
+        return r.method && "yeti/lang/std".equals(r.className)
+                        && fun.equals(r.fieldName);
     }
 }
 
@@ -998,20 +711,11 @@ final class NumericConstant extends Code implements CodeGen {
                (fl & STD_CONST) != 0;
     }
 
-    boolean genInt(Ctx ctx, boolean small) {
-        if (!(num instanceof IntNum)) {
-            return false;
-        }
-        long n = num.longValue();
-        if (!small) {
-            ctx.ldcInsn(new Long(n));
-        } else if (n >= (long) Integer.MIN_VALUE &&
-                   n <= (long) Integer.MAX_VALUE) {
-            ctx.intConst((int) n);
-        } else {
-            return false;
-        }
-        return true;
+    void genInt(Ctx ctx, int lineno, boolean longValue) {
+        if (longValue)
+            ctx.ldcInsn(new Long(num.longValue()));
+        else
+            ctx.intConst(num.intValue());
     }
 
     private static final class Impl extends Code {
@@ -1022,6 +726,8 @@ final class NumericConstant extends Code implements CodeGen {
             ctx.typeInsn(NEW, jtype);
             ctx.insn(DUP);
             ctx.ldcInsn(val);
+            if (val instanceof String)
+                ctx.intConst(10);
             ctx.visitInit(jtype, sig);
         }
     }
@@ -1061,7 +767,7 @@ final class NumericConstant extends Code implements CodeGen {
         } else if (num instanceof BigNum) {
             v.jtype = "yeti/lang/BigNum";
             v.val = num.toString();
-            v.sig = "(Ljava/lang/String;)V";
+            v.sig = "(Ljava/lang/String;I)V";
         } else {
             v.jtype = "yeti/lang/FloatNum";
             v.val = new Double(num.doubleValue());
@@ -1135,9 +841,8 @@ final class BooleanConstant extends BindRef {
     }
 
     void genIf(Ctx ctx, Label to, boolean ifTrue) {
-        if (val == ifTrue) {
+        if (val == ifTrue)
             ctx.jumpInsn(GOTO, to);
-        }
     }
 
     Object valueKey() {
@@ -1166,22 +871,21 @@ final class ConcatStrings extends Code {
                 ctx.intConst(i);
             }
             param[i].gen(ctx);
-            if (param[i].type.deref().type != YetiType.STR) {
+            boolean valueOf = param[i].type.deref().type != YetiType.STR;
+            if (valueOf)
                 ctx.methodInsn(INVOKESTATIC, "java/lang/String",
                     "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;");
-            }
             if (arr)
                 ctx.insn(AASTORE);
-            else
+            else if (!valueOf)
                 ctx.typeInsn(CHECKCAST, "java/lang/String");
         }
-        if (arr) {
+        if (arr)
             ctx.methodInsn(INVOKESTATIC, "yeti/lang/Core",
                            "concat", "([Ljava/lang/String;)Ljava/lang/String;");
-        } else if (param.length == 2) {
+        else if (param.length == 2)
             ctx.methodInsn(INVOKEVIRTUAL, "java/lang/String",
                            "concat", "(Ljava/lang/String;)Ljava/lang/String;");
-        }
         ctx.forceType("java/lang/String");
     }
 }
@@ -1217,7 +921,7 @@ final class NewArrayExpr extends Code {
 
     void gen(Ctx ctx) {
         if (count != null)
-            ctx.genInt(count, line);
+            count.genInt(ctx, line, false);
         ctx.visitLine(line);
         if (type.param[0].type != YetiType.JAVA) { // array of arrays
             ctx.typeInsn(ANEWARRAY, JavaType.descriptionOf(type.param[0]));
@@ -1280,11 +984,10 @@ final class MethodCall extends JavaExpr {
             // XXX: not checking for package access. shouldn't matter.
             useAccessor = (invokeSuper || (method.access & ACC_PROTECTED) != 0)
                 && !object.flagop(DIRECT_THIS);
-            if (useAccessor) {
+            if (useAccessor)
                 classType = ct;
-            } else if (ins == INVOKEVIRTUAL && invokeSuper) {
+            else if (ins == INVOKEVIRTUAL && invokeSuper)
                 ins = INVOKESPECIAL;
-            }
         }
         if (object != null &&
                 (ins != INVOKEINTERFACE || ctx.compilation.isGCJ)) {
@@ -1295,11 +998,10 @@ final class MethodCall extends JavaExpr {
 
     void gen(Ctx ctx) {
         _gen(ctx);
-        if (method.returnType.type == YetiType.UNIT) {
+        if (method.returnType.type == YetiType.UNIT)
             ctx.insn(ACONST_NULL);
-        } else {
+        else
             convertValue(ctx, method.returnType);
-        }
     }
 
     void genIf(Ctx ctx, Label to, boolean ifTrue) {
@@ -1310,25 +1012,6 @@ final class MethodCall extends JavaExpr {
         } else {
             super.genIf(ctx, to, ifTrue);
         }
-    }
-}
-
-final class Throw extends Code {
-    Code throwable;
-
-    Throw(Code throwable, YType type) {
-        this.type = type;
-        this.throwable = throwable;
-    }
-
-    void gen(Ctx ctx) {
-        throwable.gen(ctx);
-        JavaType t = throwable.type.deref().javaType;
-        if (t == null)
-            throw new CompileException(null,
-                    "Internal error - throw argument type is unknown");
-        ctx.typeInsn(CHECKCAST, t.className());
-        ctx.insn(ATHROW);
     }
 }
 
@@ -1356,6 +1039,7 @@ final class ClassField extends JavaExpr implements CodeGen {
         if ((field.access & ACC_PROTECTED) != 0
                 && classType.implementation != null
                 && !object.flagop(DIRECT_THIS)) {
+            // XXX WTF: object can't be null - !object.flagop in condition
             descr = (object == null ? "()" : '(' + classType.description + ')')
                     + descr;
             String name = classType.implementation
@@ -1368,7 +1052,7 @@ final class ClassField extends JavaExpr implements CodeGen {
         convertValue(ctx, field.type);
     }
 
-    public void gen2(Ctx ctx, Code setValue, int _) {
+    public void gen2(Ctx ctx, Code setValue, int __) {
         JavaType classType = field.classType.javaType;
         String className = classType.className();
         if (object != null) {
@@ -1378,15 +1062,15 @@ final class ClassField extends JavaExpr implements CodeGen {
         }
         genValue(ctx, setValue, field.type, line);
         String descr = JavaType.descriptionOf(field.type);
-        if (descr.length() > 1) {
+        if (descr.length() > 1)
             ctx.typeInsn(CHECKCAST,
                 field.type.type == YetiType.JAVA
                     ? field.type.javaType.className() : descr);
-        }
         
         if ((field.access & ACC_PROTECTED) != 0
                 && classType.implementation != null
                 && !object.flagop(DIRECT_THIS)) {
+            // XXX WTF: object can't be null - !object.flagop in condition
             descr = (object != null ? "(".concat(classType.description)
                                     : "(") + descr + ")V";
             String name = classType.implementation
@@ -1403,6 +1087,10 @@ final class ClassField extends JavaExpr implements CodeGen {
         if ((field.access & ACC_FINAL) != 0)
             return null;
         return new SimpleCode(this, setValue, null, 0);
+    }
+
+    boolean flagop(int fl) {
+        return (fl & STD_CONST) != 0 && field.constValue != null;
     }
 }
 
@@ -1426,6 +1114,15 @@ final class Cast extends JavaExpr {
             ctx.insn(POP);
             ctx.insn(ACONST_NULL);
         }
+    }
+
+    boolean prepareConst(Ctx ctx) {
+        return object.prepareConst(ctx);
+    }
+
+    boolean flagop(int fl) {
+        return ((fl & CONST) != 0 ? !convert : (fl & PURE) != 0) &&
+               object.flagop(fl);
     }
 }
 
@@ -1520,7 +1217,7 @@ abstract class SelectMember extends BindRef implements CodeGen {
                 "get", "(Ljava/lang/String;)Ljava/lang/Object;");
     }
 
-    public void gen2(Ctx ctx, Code setValue, int _) {
+    public void gen2(Ctx ctx, Code setValue, int __) {
         st.gen(ctx);
         ctx.visitLine(line);
         if (ctx.compilation.isGCJ)
@@ -1534,9 +1231,8 @@ abstract class SelectMember extends BindRef implements CodeGen {
     }
 
     Code assign(final Code setValue) {
-        if (!assigned && !mayAssign()) {
+        if (!assigned && !mayAssign())
             return null;
-        }
         assigned = true;
         return new SimpleCode(this, setValue, null, 0);
     }
@@ -1594,20 +1290,27 @@ final class KeyRefExpr extends Code implements CodeGen {
 
     void gen(Ctx ctx) {
         val.gen(ctx);
-        if (ctx.compilation.isGCJ) {
-            ctx.typeInsn(CHECKCAST, "yeti/lang/ByKey");
+        if (val.type.deref().param[2] == YetiType.LIST_TYPE) {
+            ctx.visitLine(line);
+            ctx.typeInsn(CHECKCAST, "yeti/lang/MList");
+            key.genInt(ctx, line, false);
+            ctx.visitLine(line);
+            ctx.methodInsn(INVOKEVIRTUAL, "yeti/lang/MList", "get",
+                           "(I)Ljava/lang/Object;");
+            return;
         }
+        if (ctx.compilation.isGCJ)
+            ctx.typeInsn(CHECKCAST, "yeti/lang/ByKey");
         key.gen(ctx);
         ctx.visitLine(line);
         ctx.methodInsn(INVOKEINTERFACE, "yeti/lang/ByKey", "vget",
-                              "(Ljava/lang/Object;)Ljava/lang/Object;");
+                       "(Ljava/lang/Object;)Ljava/lang/Object;");
     }
 
-    public void gen2(Ctx ctx, Code setValue, int _) {
+    public void gen2(Ctx ctx, Code setValue, int __) {
         val.gen(ctx);
-        if (ctx.compilation.isGCJ) {
+        if (ctx.compilation.isGCJ)
             ctx.typeInsn(CHECKCAST, "yeti/lang/ByKey");
-        }
         key.gen(ctx);
         setValue.gen(ctx);
         ctx.visitLine(line);
@@ -1711,6 +1414,7 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
     private boolean directBind;
     private String directField;
     private String myClass;
+    private int bindingUsed;
 
     class Ref extends BindRef {
         int arity;
@@ -1720,15 +1424,15 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
             if (directBind) {
                 st.gen(ctx);
             } else {
+                --bindingUsed;
                 genPreGet(ctx);
                 genGet(ctx);
             }
         }
 
         Code assign(final Code value) {
-            if (!var) {
+            if (!var)
                 return null;
-            }
             assigned = true;
             return new Code() {
                 void gen(Ctx ctx) {
@@ -1752,7 +1456,10 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
 
         CaptureWrapper capture() {
             captured = true;
-            return var ? BindExpr.this : null;
+            if (!var)
+                return null;
+            ++bindingUsed; // reference through wrapper
+            return BindExpr.this;
         }
 
         Code unref(boolean force) {
@@ -1785,6 +1492,7 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
         res.next = refs;
         if (st instanceof Function)
             res.origin = res;
+        ++bindingUsed;
         return refs = res;
     }
 
@@ -1801,7 +1509,15 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
     public void genPreGet(Ctx ctx) {
         if (mvar == -1) {
             if (directField == null) {
-                ctx.load(id).forceType(javaType);
+                ctx.load(id);
+                int t;
+                // garbage collect infinite lists
+                if (bindingUsed == 0 && ctx.tainted == 0 &&
+                      ((t = st.type.deref().type) == 0 || t == YetiType.MAP)) {
+                    ctx.insn(ACONST_NULL);
+                    ctx.varInsn(ASTORE, id);
+                }
+                ctx.forceType(javaType);
             } else {
                 ctx.fieldInsn(GETSTATIC, myClass, directField, javaDescr);
             }
@@ -1835,11 +1551,10 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
             value.gen(ctx);
             if (!javaType.equals("java/lang/Object"))
                 ctx.typeInsn(CHECKCAST, javaType);
-            if (directField == null) {
+            if (directField == null)
                 ctx.varInsn(ASTORE, id);
-            } else {
+            else
                 ctx.fieldInsn(PUTSTATIC, myClass, directField, javaDescr);
-            }
         } else {
             ctx.load(mvar).intConst(id);
             value.gen(ctx);
@@ -1861,12 +1576,12 @@ final class BindExpr extends SeqExpr implements Binder, CaptureWrapper {
             directBind = true;
             return;
         }
-        if (directField == "") {
+        if (directField == "") { // forceDirect, JavaClass does it
             myClass = ctx.className;
             directField =
                 "$".concat(Integer.toString(ctx.constants.ctx.fieldCounter++));
-            ctx.cw.visitField(ACC_STATIC | ACC_SYNTHETIC, directField,
-                              javaDescr, null, null).visitEnd();
+            ctx.cw.visitField(ACC_STATIC | ACC_SYNTHETIC | ACC_VOLATILE,
+                              directField, javaDescr, null, null).visitEnd();
         } else if (mvar == -1) {
             id = ctx.localVarCount++;
         }
@@ -1898,11 +1613,12 @@ final class LoadModule extends Code {
     String moduleName;
     ModuleType moduleType;
     boolean checkUsed;
+    boolean typedefUsed;
     private boolean used;
 
     LoadModule(String moduleName, ModuleType type, int depth) {
-        this.type = type.copy(depth);
-        this.moduleName = moduleName;
+        this.type = type.copy(depth, null);
+        this.moduleName = moduleName.toLowerCase();
         moduleType = type;
         polymorph = true;
     }
@@ -1912,29 +1628,26 @@ final class LoadModule extends Code {
             ctx.insn(ACONST_NULL);
         else
             ctx.methodInsn(INVOKESTATIC, moduleName,
-                "eval", "()Ljava/lang/Object;");
+                           "eval", "()Ljava/lang/Object;");
     }
 
     Binder bindField(final String name, final YType type) {
         return new Binder() {
             public BindRef getRef(final int line) {
-                String directRef = (String) moduleType.directFields.get(name);
-                if (directRef != null && !directRef.equals("."))
-                    return new StaticRef(directRef, "_", type,
-                                         this, true, line);
-                if (directRef == null)
-                    used = true;
-
-                // constant field
-                if (directRef != null || // "." - static final on module
-                        !moduleType.directFields.containsKey(name))
-                    return new StaticRef(moduleName, mangle(name), type,
-                                         this, true, line);
+                final boolean mutable = type.field == YetiType.FIELD_MUTABLE;
+                if (!mutable && moduleType.directFields) {
+                    String fname = name.equals("eval") ? "eval$" : mangle(name);
+                    StaticRef r = new StaticRef(moduleName, fname, type,
+                                                this, true, line);
+                    r.method = true;
+                    return r;
+                }
 
                 // property or mutable field
-                final boolean mutable = type.field == YetiType.FIELD_MUTABLE;
+                // XXX in threory reading properties could be done directly
+                used = true;
                 return new SelectMember(type, LoadModule.this,
-                                        name, line, false) {
+                                        name, line, !mutable) {
                     boolean mayAssign() {
                         return mutable;
                     }
@@ -1992,16 +1705,14 @@ final class ListConstructor extends Code implements CodeGen {
             items[i].gen(ctx);
         }
         ctx.insn(ACONST_NULL);
-        for (int i = items.length; --i >= 0;) {
-            if (items[i] instanceof Range) {
+        for (int i = items.length; --i >= 0;)
+            if (items[i] instanceof Range)
                 ctx.methodInsn(INVOKESTATIC, "yeti/lang/ListRange",
                         "range", "(Ljava/lang/Object;Ljava/lang/Object;"
                                 + "Lyeti/lang/AList;)Lyeti/lang/AList;");
-            } else {
+            else
                 ctx.visitInit("yeti/lang/LList",
                               "(Ljava/lang/Object;Lyeti/lang/AList;)V");
-            }
-        }
     }
 
     void gen(Ctx ctx) {
@@ -2009,11 +1720,10 @@ final class ListConstructor extends Code implements CodeGen {
             ctx.insn(ACONST_NULL);
             return;
         }
-        if (key == null) {
+        if (key == null)
             gen2(ctx, null, 0);
-        } else {
+        else
             ctx.constant(key, new SimpleCode(this, null, type, 0));
-        }
         ctx.forceType("yeti/lang/AList");
     }
 
